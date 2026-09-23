@@ -1,0 +1,7 @@
+[net]
+git-fetch-with-cli = true
+
+# Faster linking (optional)
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]

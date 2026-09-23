@@ -1,0 +1,22 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+
+# Environment / secrets
+.env
+.env.*
+.envrc
+*.key
+*.pem
+
+# Editors / agents
+.idea
+**/.idea
+.vscode
+.codex
+**/.codex
+.claude/settings.local.json
+
+# OS
+.DS_Store

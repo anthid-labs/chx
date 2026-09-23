@@ -1,0 +1,31 @@
+[package]
+name = "chx-core"
+description = "ClickHouse schema migrations: ordered SQL files, checksummed history, and resumable partial runs."
+keywords = ["clickhouse", "migrations", "database", "schema", "sql"]
+categories = ["database", "development-tools"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "chx"
+path = "src/lib.rs"
+
+[dependencies]
+reqwest = { workspace = true }
+url = { workspace = true }
+percent-encoding = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The live test drives a real server, which needs a runtime. The library itself
+# does not pick one: reqwest runs on whatever tokio runtime its caller has.
+tokio = { workspace = true }
+tempfile = { workspace = true }

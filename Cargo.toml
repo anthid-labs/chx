@@ -1,0 +1,73 @@
+[workspace]
+resolver = "3"
+
+# Members are globbed: dropping a crate into apps/ or crates/ picks it up with
+# no edit here. The glob's parent directory has to exist, since cargo treats an
+# unmatched glob as a literal path and fails to read it.
+members = [
+    "apps/*",
+    "crates/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/anthid-labs/chx"
+homepage = "https://github.com/anthid-labs/chx"
+authors = ["Dallin Wright <dallinwright@anthid.com>"]
+# Stated rather than inferred, so a build on an older toolchain fails with the
+# version it needs instead of an error inside a dependency. `cargo clippy`
+# enforces the declared version, so it cannot drift below what the code uses.
+rust-version = "1.88"
+
+[profile.release]
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+
+[workspace.dependencies]
+# Local crates. Add one line per crate created under crates/, then depend on
+# it from an app with `<name> = { workspace = true }`.
+#
+# `version` alongside `path` is what makes publishing work: cargo builds against
+# the path locally and rewrites the dependency to the version on crates.io when
+# it packages. Keep it in step with `[workspace.package]` above on every bump.
+#
+# The library is `chx-core` because `chx` on crates.io is an unrelated hex
+# editor. The command it builds is still `chx`.
+chx-core = { path = "crates/chx-core", version = "0.1.0" }
+
+# Async runtime
+tokio = { version = "1.53", features = ["full"] }
+
+# ClickHouse, over its HTTP interface.
+#
+# Not a ClickHouse client crate. Every migration statement is opaque text, and
+# the only rows chx reads are its own history, so a typed row mapper buys
+# nothing. The HTTP interface is also the one every deployment exposes,
+# including ClickHouse Cloud, which does not open the native port by default.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+url = "2.5"
+percent-encoding = "2.3"
+
+# Checksums. SHA-256 rather than something faster, because the stored value
+# should be checkable with `sha256sum migrations/<file>.sql` and nothing else.
+sha2 = "0.11"
+
+# CLI
+clap = { version = "4.6", features = ["derive", "env"] }
+
+# Errors
+thiserror = "2"
+
+# Time
+chrono = { version = "0.4" }
+
+# Telemetry
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "env-filter", "std", "ansi"] }
+
+# Test-only
+tempfile = "3.27"

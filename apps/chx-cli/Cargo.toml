@@ -1,0 +1,31 @@
+[package]
+name = "chx-cli"
+description = "Command line interface for chx: run ClickHouse schema migrations in order, with checksummed history."
+keywords = ["clickhouse", "migrations", "database", "cli"]
+categories = ["command-line-utilities", "database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# The package is `chx-cli` so it can be published alongside the library, but
+# the command it installs is `chx`.
+[[bin]]
+name = "chx"
+path = "src/main.rs"
+
+[dependencies]
+chx-core = { workspace = true }
+
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
