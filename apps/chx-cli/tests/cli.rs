@@ -11,7 +11,10 @@ const CHX: &str = env!("CARGO_BIN_EXE_chx");
 
 fn chx(args: &[&str], database_url: Option<&str>) -> Output {
     let mut command = Command::new(CHX);
-    command.args(args).env_remove("CLICKHOUSE_URL");
+    command
+        .args(args)
+        .env_remove("CLICKHOUSE_URL")
+        .env_remove("CLICKHOUSE_CLUSTER");
     if let Some(url) = database_url {
         command.env("CLICKHOUSE_URL", url);
     }
@@ -28,7 +31,7 @@ fn a_missing_url_is_a_usage_error() {
 
     assert!(!output.status.success());
     assert!(
-        stderr(&output).contains("--database-url"),
+        stderr(&output).contains("--clickhouse-url"),
         "{}",
         stderr(&output)
     );

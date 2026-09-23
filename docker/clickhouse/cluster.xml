@@ -1,0 +1,41 @@
+<!--
+  Shared by both cluster nodes. What differs per node comes from the
+  environment, so the two cannot drift apart in anything else.
+
+  `{replica}` is the host name, which makes it unique across shards. chx's
+  history table relies on that: its Keeper path has no `{shard}`.
+-->
+<clickhouse>
+  <zookeeper>
+    <node>
+      <host>keeper</host>
+      <port>9181</port>
+    </node>
+  </zookeeper>
+
+  <macros>
+    <shard from_env="CHX_SHARD"/>
+    <replica from_env="CHX_REPLICA"/>
+  </macros>
+
+  <remote_servers>
+    <chx>
+      <shard>
+        <replica>
+          <host>ch-1</host>
+          <port>9000</port>
+          <user>default</user>
+          <password>chx</password>
+        </replica>
+      </shard>
+      <shard>
+        <replica>
+          <host>ch-2</host>
+          <port>9000</port>
+          <user>default</user>
+          <password>chx</password>
+        </replica>
+      </shard>
+    </chx>
+  </remote_servers>
+</clickhouse>

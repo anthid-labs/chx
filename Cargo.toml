@@ -40,7 +40,9 @@ opt-level = 0
 chx-core = { path = "crates/chx-core", version = "0.1.0" }
 
 # Async runtime
-tokio = { version = "1.53", features = ["full"] }
+# Features are chosen per crate: the library needs only a timer, and a runtime
+# is the binary's decision.
+tokio = { version = "1.53" }
 
 # ClickHouse, over its HTTP interface.
 #

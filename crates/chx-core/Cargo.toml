@@ -17,6 +17,8 @@ name = "chx"
 path = "src/lib.rs"
 
 [dependencies]
+# The timer the lock polls with. The runtime itself is the caller's.
+tokio = { workspace = true, features = ["time"] }
 reqwest = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
@@ -25,7 +27,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The live test drives a real server, which needs a runtime. The library itself
-# does not pick one: reqwest runs on whatever tokio runtime its caller has.
-tokio = { workspace = true }
+# The live tests need a runtime, and join two runs to race them for the lock.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }

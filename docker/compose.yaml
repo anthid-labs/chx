@@ -1,0 +1,76 @@
+# ClickHouse for the live tests.
+#
+#   docker compose -f docker/compose.yaml up -d --wait
+#   cargo test -p chx-core -- --ignored
+#   docker compose -f docker/compose.yaml down -v
+#
+# The tests run the `up` themselves, so the first command is only needed to
+# poke at a server by hand. Ports are fixed and far from the defaults, so
+# nothing here can be mistaken for a tunnel to a real server on 8123.
+#
+# Two setups:
+#
+# - `single`: one server, no Keeper. The common case.
+# - `ch-1` and `ch-2`: cluster `chx`, two shards of one replica each, sharing
+#   `keeper`. Two shards rather than two replicas of one, because chx keeps one
+#   history for the whole cluster, and that is only visible when the nodes do
+#   not already share data through a shard.
+name: chx-test
+
+x-clickhouse: &clickhouse
+  image: clickhouse/clickhouse-server:26.6
+  environment: &clickhouse-env
+    CLICKHOUSE_PASSWORD: chx
+  healthcheck:
+    test: ["CMD", "clickhouse-client", "--password", "chx", "-q", "SELECT 1"]
+    interval: 1s
+    timeout: 5s
+    retries: 60
+  ulimits:
+    nofile: { soft: 262144, hard: 262144 }
+
+services:
+  single:
+    <<: *clickhouse
+    ports:
+      - "127.0.0.1:58123:8123"
+
+  keeper:
+    image: clickhouse/clickhouse-server:26.6
+    # The server image carries the keeper too, so the stack pulls one image.
+    entrypoint: ["clickhouse", "keeper", "--config-file", "/etc/clickhouse-keeper/keeper.xml"]
+    volumes:
+      - ./clickhouse/keeper.xml:/etc/clickhouse-keeper/keeper.xml:ro
+    healthcheck:
+      test: ["CMD", "clickhouse", "keeper-client", "--host", "localhost", "--port", "9181", "-q", "ls /"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  ch-1:
+    <<: *clickhouse
+    hostname: ch-1
+    environment:
+      <<: *clickhouse-env
+      CHX_SHARD: "1"
+      CHX_REPLICA: ch-1
+    volumes:
+      - ./clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    ports:
+      - "127.0.0.1:58124:8123"
+    depends_on:
+      keeper: { condition: service_healthy }
+
+  ch-2:
+    <<: *clickhouse
+    hostname: ch-2
+    environment:
+      <<: *clickhouse-env
+      CHX_SHARD: "2"
+      CHX_REPLICA: ch-2
+    volumes:
+      - ./clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    ports:
+      - "127.0.0.1:58125:8123"
+    depends_on:
+      keeper: { condition: service_healthy }

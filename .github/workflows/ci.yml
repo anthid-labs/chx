@@ -1,0 +1,70 @@
+name: "✅ CI"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Called by the publish workflow, so a release runs exactly these checks.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # Hermetic: no Docker, no network.
+      - name: Run unit tests
+        run: cargo test --workspace
+
+  integration:
+    name: Integration tests (ClickHouse)
+    runs-on: ubuntu-latest
+    # Pulling the ClickHouse image is most of the time. The tests themselves
+    # take seconds.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      # The tests bring up docker/compose.yaml themselves: a single server and
+      # a two-node cluster with Keeper.
+      - name: Run integration tests
+        run: cargo test -p chx-core -- --ignored
+
+      - name: ClickHouse logs
+        if: failure()
+        run: docker compose -f docker/compose.yaml logs --no-color --tail 200

@@ -168,14 +168,16 @@ impl Client {
 
         let response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
-        let exception = response
+        let code = response
             .headers()
-            .contains_key("X-ClickHouse-Exception-Code");
+            .get("X-ClickHouse-Exception-Code")
+            .map(|value| value.to_str().ok().and_then(|code| code.parse().ok()));
         let body = response.text().await.map_err(Error::Transport)?;
 
-        if !status.is_success() || exception {
+        if !status.is_success() || code.is_some() {
             return Err(Error::ClickHouse {
                 status: status.as_u16(),
+                code: code.flatten(),
                 message: body.trim().to_string(),
             });
         }

@@ -17,6 +17,20 @@
 //! - A new file numbered below the latest applied version. Usually a branch
 //!   merged after a later one; renumber it above the latest.
 //!
+//! # Importing a database built by hand
+//!
+//! [`Migrator::import`] records files as applied without running them, for a
+//! database whose schema was built some other way. It only ever adds rows:
+//! anything already recorded is left alone, and a recorded row that disagrees
+//! with its file stops the import before anything is written. See
+//! [`import_plan`].
+//!
+//! # One run at a time
+//!
+//! A run holds [`lock`] from before it reads the history until after its last
+//! statement, so two deploys that start together apply each migration once:
+//! the second waits, then finds nothing left to do.
+//!
 //! # Partial migrations
 //!
 //! ClickHouse DDL is not transactional, so a migration that fails on its third
@@ -30,6 +44,7 @@
 //! changes nothing in the database, and chx cannot tell.
 
 pub mod history;
+pub mod lock;
 pub mod source;
 pub mod split;
 
@@ -39,13 +54,21 @@ use std::time::{Duration, Instant};
 use crate::client::Client;
 use crate::error::{Error, Result};
 
-pub use history::Record;
+pub use history::{Placement, Record};
+pub use lock::Holder;
+
+/// How long a run waits for another to release the lock by default. Long
+/// enough for a deploy to queue behind one that is mid-migration, short
+/// enough that a lock left by a dead run is reported within a CI step.
+pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(300);
 pub use source::Migration;
 
 /// A loaded migrations directory.
 #[derive(Debug, Clone)]
 pub struct Migrator {
     migrations: Vec<Migration>,
+    cluster: Option<String>,
+    lock_timeout: Duration,
 }
 
 /// One migration this run brought to completion.
@@ -61,6 +84,14 @@ pub struct Applied {
     pub elapsed: Duration,
 }
 
+/// One migration [`Migrator::import`] recorded as applied without running it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Imported {
+    pub version: i64,
+    pub description: String,
+    pub statements: usize,
+}
+
 /// One migration the run will execute, and where in it to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step<'a> {
@@ -74,7 +105,27 @@ impl Migrator {
     pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             migrations: source::read_dir(dir.as_ref())?,
+            cluster: None,
+            lock_timeout: DEFAULT_LOCK_TIMEOUT,
         })
+    }
+
+    /// Keeps the history table on every node of `cluster`, if the cluster can
+    /// hold a replicated table. Falls back to a local table with a warning if
+    /// it cannot. See [`history`] for the rules.
+    ///
+    /// Only chx's own table is affected. Statements in migration files run
+    /// exactly as written, so a table meant for every node needs its own
+    /// `ON CLUSTER`.
+    pub fn on_cluster(mut self, cluster: impl Into<String>) -> Self {
+        self.cluster = Some(cluster.into());
+        self
+    }
+
+    /// How long to wait for another run to release the lock. Zero tries once.
+    pub fn lock_timeout(mut self, timeout: Duration) -> Self {
+        self.lock_timeout = timeout;
+        self
     }
 
     pub fn migrations(&self) -> &[Migration] {
@@ -85,14 +136,87 @@ impl Migrator {
     /// finishes so a caller can report progress while a long run continues.
     ///
     /// Stops at the first failing statement with [`Error::Statement`]. What
-    /// ran before it is recorded, and running again resumes there.
+    /// ran before it is recorded, and running again resumes there. Fails with
+    /// [`Error::Locked`] if another run holds the lock past the timeout.
     pub async fn run(
         &self,
         client: &Client,
+        on_applied: impl FnMut(&Applied),
+    ) -> Result<Vec<Applied>> {
+        let placement = history::ensure_table(client, self.cluster.as_deref()).await?;
+        let lock = lock::acquire(client, &placement, self.lock_timeout).await?;
+
+        let outcome = self.run_locked(client, &placement, on_applied).await;
+
+        // Released on failure too: the history already says how far the run
+        // got, so the next one can resume without anyone clearing a lock.
+        release(lock, outcome).await
+    }
+
+    /// Records every migration file up to `through` (all of them when `None`)
+    /// as applied, without running it. For a database whose schema was built
+    /// by hand from these same files.
+    ///
+    /// Only adds rows. A version that is already recorded as complete with the
+    /// same checksum is skipped. A recorded version whose checksum differs, or
+    /// that is incomplete, fails the whole import before any row is written:
+    /// the history and the files disagree, and choosing between them is not
+    /// something to do silently.
+    ///
+    /// Nothing checks that the database really matches the files. That is the
+    /// caller's claim, and a wrong one means `run` will skip a migration the
+    /// schema never had.
+    pub async fn import(&self, client: &Client, through: Option<i64>) -> Result<Vec<Imported>> {
+        let placement = history::ensure_table(client, self.cluster.as_deref()).await?;
+        let lock = lock::acquire(client, &placement, self.lock_timeout).await?;
+
+        let outcome = self.import_locked(client, &placement, through).await;
+
+        release(lock, outcome).await
+    }
+
+    async fn import_locked(
+        &self,
+        client: &Client,
+        placement: &Placement,
+        through: Option<i64>,
+    ) -> Result<Vec<Imported>> {
+        let recorded = history::read(client, placement).await?;
+        let pending = import_plan(&self.migrations, &recorded, through)?;
+
+        let mut imported = Vec::with_capacity(pending.len());
+        for migration in pending {
+            let statements = split::statements(&migration.sql).len();
+            let record = Record {
+                version: migration.version,
+                description: migration.description.clone(),
+                checksum: migration.checksum.clone(),
+                statements: statements as u32,
+                applied: statements as u32,
+                success: true,
+            };
+
+            // Zero, because nothing ran. It is also how an imported row can be
+            // told apart from an applied one later.
+            history::record(client, &record, 0).await?;
+
+            imported.push(Imported {
+                version: migration.version,
+                description: migration.description.clone(),
+                statements,
+            });
+        }
+
+        Ok(imported)
+    }
+
+    async fn run_locked(
+        &self,
+        client: &Client,
+        placement: &Placement,
         mut on_applied: impl FnMut(&Applied),
     ) -> Result<Vec<Applied>> {
-        history::ensure_table(client).await?;
-        let recorded = history::read(client).await?;
+        let recorded = history::read(client, placement).await?;
         let steps = plan(&self.migrations, &recorded)?;
 
         let mut done = Vec::with_capacity(steps.len());
@@ -103,6 +227,80 @@ impl Migrator {
         }
 
         Ok(done)
+    }
+}
+
+/// Releases the lock left by a run that died holding it, and returns who that
+/// was, or `None` if nobody held it.
+///
+/// `cluster` must be the one runs are made with, so the lock is dropped on
+/// every node that has it. Releasing the lock of a run that is still going
+/// lets a second one start on top of it, so check first.
+pub async fn unlock(client: &Client, cluster: Option<&str>) -> Result<Option<Holder>> {
+    let placement = history::ensure_table(client, cluster).await?;
+    lock::unlock(client, &placement).await
+}
+
+/// The files [`Migrator::import`] would record: every one up to `through`
+/// with no row yet, in version order.
+///
+/// Pure, like [`plan`]. Refuses, and so writes nothing, when a file it would
+/// otherwise consider is already recorded with a different checksum or as
+/// incomplete. Rows for versions with no file, or above `through`, are not
+/// its business and are left for `run` to judge.
+pub fn import_plan<'a>(
+    migrations: &'a [Migration],
+    recorded: &[Record],
+    through: Option<i64>,
+) -> Result<Vec<&'a Migration>> {
+    let mut pending = Vec::new();
+
+    for migration in migrations {
+        if through.is_some_and(|through| migration.version > through) {
+            continue;
+        }
+
+        let Some(record) = recorded.iter().find(|r| r.version == migration.version) else {
+            pending.push(migration);
+            continue;
+        };
+
+        if !record.success {
+            return Err(Error::History(format!(
+                "migration {} ({}) is recorded as incomplete, with {} of {} statements applied. \
+                 Finish it with `chx migrate run` rather than importing over it.",
+                record.version, record.description, record.applied, record.statements
+            )));
+        }
+
+        if record.checksum != migration.checksum {
+            return Err(Error::History(format!(
+                "migration {} ({}) is already recorded with checksum {}, but {} has checksum {}. \
+                 Import does not overwrite history; restore the file or resolve it by hand.",
+                record.version,
+                record.description,
+                record.checksum,
+                migration.path.display(),
+                migration.checksum
+            )));
+        }
+    }
+
+    Ok(pending)
+}
+
+/// Releases the lock whatever happened, and reports the more important of the
+/// two errors when both failed.
+async fn release<T>(lock: lock::Lock<'_>, outcome: Result<T>) -> Result<T> {
+    let released = lock.release().await;
+    match (outcome, released) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(err), Ok(())) => Err(err),
+        (Err(err), Err(release)) => {
+            tracing::warn!(%release, "could not release the migration lock");
+            Err(err)
+        }
     }
 }
 
@@ -399,5 +597,76 @@ mod tests {
         record.success = false;
 
         assert!(matches!(plan(&files, &[record]), Err(Error::History(_))));
+    }
+
+    #[test]
+    fn import_takes_every_unrecorded_file() {
+        let files = [migration(1, "SELECT 1"), migration(2, "SELECT 2")];
+
+        let pending = import_plan(&files, &[], None).unwrap();
+
+        assert_eq!(
+            pending.iter().map(|m| m.version).collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn import_stops_at_through() {
+        let files = [migration(1, "SELECT 1"), migration(2, "SELECT 2")];
+
+        let pending = import_plan(&files, &[], Some(1)).unwrap();
+
+        assert_eq!(pending.iter().map(|m| m.version).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn import_fills_gaps_and_skips_what_matches() {
+        let files = [
+            migration(1, "SELECT 1"),
+            migration(2, "SELECT 2"),
+            migration(3, "SELECT 3"),
+        ];
+
+        let pending = import_plan(&files, &[done(&files[1])], None).unwrap();
+
+        assert_eq!(
+            pending.iter().map(|m| m.version).collect::<Vec<_>>(),
+            [1, 3]
+        );
+    }
+
+    #[test]
+    fn import_never_overwrites_a_different_checksum() {
+        let files = [migration(1, "SELECT 1"), migration(2, "SELECT 2")];
+        let mut record = done(&files[0]);
+        record.checksum = source::checksum(b"SELECT 0");
+
+        let err = import_plan(&files, &[record], None).unwrap_err();
+
+        assert!(err.to_string().contains("does not overwrite"), "{err}");
+    }
+
+    #[test]
+    fn import_never_overwrites_an_incomplete_migration() {
+        let files = [migration(1, "SELECT 1; SELECT 2")];
+        let mut record = done(&files[0]);
+        record.applied = 1;
+        record.success = false;
+
+        let err = import_plan(&files, &[record], None).unwrap_err();
+
+        assert!(err.to_string().contains("incomplete"), "{err}");
+    }
+
+    #[test]
+    fn import_ignores_a_conflict_above_through() {
+        let files = [migration(1, "SELECT 1"), migration(2, "SELECT 2")];
+        let mut record = done(&files[1]);
+        record.checksum = source::checksum(b"SELECT 0");
+
+        let pending = import_plan(&files, &[record], Some(1)).unwrap();
+
+        assert_eq!(pending.len(), 1);
     }
 }

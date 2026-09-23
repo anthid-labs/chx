@@ -38,7 +38,22 @@ pub enum Error {
 
     /// ClickHouse answered, and the answer was an error.
     #[error("clickhouse returned {status}: {message}")]
-    ClickHouse { status: u16, message: String },
+    ClickHouse {
+        status: u16,
+        /// The exception code from `X-ClickHouse-Exception-Code`, for callers
+        /// that act on one failure and pass the rest through. Matching on the
+        /// message text would break with the next server release.
+        code: Option<u32>,
+        message: String,
+    },
+
+    /// Another run held the migration lock for longer than this one would
+    /// wait. Nothing was run.
+    #[error(
+        "another run holds the migration lock ({holder}, since {since} UTC). If that run is \
+         gone, release it with `chx migrate unlock`."
+    )]
+    Locked { holder: String, since: String },
 
     /// ClickHouse could not be reached, or the connection broke mid-request.
     #[error("clickhouse unreachable: {0}")]
@@ -102,6 +117,7 @@ mod tests {
             total: 4,
             source: Box::new(Error::ClickHouse {
                 status: 500,
+                code: Some(62),
                 message: "Code: 62. Syntax error".to_string(),
             }),
         };
