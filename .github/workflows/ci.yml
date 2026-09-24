@@ -1,8 +1,7 @@
 name: "✅ CI"
 
+# No push trigger: the publish workflow runs this on every push to main.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
   # Called by the publish workflow, so a release runs exactly these checks.
@@ -11,11 +10,39 @@ on:
 permissions:
   contents: read
 
+# Only a pull request is cancelled by a newer push. On main, a cancelled run
+# is a release that never publishes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Every merge to main publishes, so every pull request carries a version
+  # that has not been released yet.
+  version:
+    name: Version bumped
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          pin=$(sed -n 's/^chx-core = .*version = "\(.*\)".*/\1/p' Cargo.toml)
+          if [ "$pin" != "$version" ]; then
+            echo "::error file=Cargo.toml::chx-core is pinned to $pin in [workspace.dependencies], but the workspace version is $version"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "::error file=Cargo.toml::v$version is already released. Bump version in the root Cargo.toml and the chx-core pin with it."
+            exit 1
+          fi
+
+
   lint-and-test:
     name: Lint and unit tests
     runs-on: ubuntu-latest

@@ -480,16 +480,14 @@ compose stack.
 
 ### Releases
 
-A release is a pushed tag. Bump `version` in the root `Cargo.toml`, and the
-`chx-core` version in `[workspace.dependencies]` with it, then:
+A release is a merge to main. Every pull request bumps `version` in the root
+`Cargo.toml`, and the `chx-core` version in `[workspace.dependencies]` with it.
+CI fails a pull request whose version is already tagged, or whose pin does not
+match.
 
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The publish workflow runs CI on that commit, then `cargo publish --workspace`,
-which publishes `chx-core` before `chx-cli`.
+On merge, the publish workflow runs CI on that commit, then
+`cargo publish --workspace`, which publishes `chx-core` before `chx-cli`, then
+tags the commit `v<version>`.
 
 ### What a change is expected to carry
 

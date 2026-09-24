@@ -1,27 +1,58 @@
 name: "📦 Publish to crates.io"
 
-# A release is a pushed tag: `git tag v0.1.0 && git push origin v0.1.0`.
-# Bump `version` in the root Cargo.toml, and the `chx-core` line in
-# [workspace.dependencies] with it, before tagging.
+# A release is a merge to main. The pull request's version check makes sure
+# its version is new; this publishes it and tags the commit `v<version>`.
+# A push whose version is already tagged still runs CI, and publishes nothing.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: read
+
+# Releases run one at a time and in order. Two quick merges each publish.
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   ci:
     name: CI
     uses: ./.github/workflows/ci.yml
 
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      released: ${{ steps.version.outputs.released }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
-    name: Publish
+    name: Publish v${{ needs.version.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # A version number is burned on crates.io even if it is yanked a minute
     # later, so nothing publishes unless every check passed on this commit.
-    needs: ci
+    needs: [ci, version]
+    if: needs.version.outputs.released == 'false'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -39,3 +70,10 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --workspace --locked
+
+      # After the publish, so a tag always names a version that is on
+      # crates.io. A tag pushed with GITHUB_TOKEN triggers no workflow.
+      - name: Tag
+        run: |
+          git tag "v${{ needs.version.outputs.version }}"
+          git push origin "v${{ needs.version.outputs.version }}"
