@@ -297,10 +297,12 @@ http[s]://user:password@host:port/database?setting=value
   message or a log line.
 - **Query parameters** are passed through as ClickHouse settings, for example
   `?max_execution_time=600`.
-- **`.env` files are not read.** A `.env` picked up by walking up from the
-  working directory is a common way to run a migration against a database
-  nobody meant to name. The URL comes from the flag or the process
-  environment, and nowhere else.
+- **`.env` is read, as sqlx-cli reads it.** The nearest `.env`, found by
+  walking up from the working directory, fills in variables the process does
+  not already have. An exported variable wins over the file, and
+  `--clickhouse-url` wins over both. Check which `.env` a directory resolves
+  to before running from it: the file is a common way to name a database
+  without meaning to.
 
 ## Clusters
 
@@ -515,7 +517,7 @@ negotiable:
   node.
 - **The checksum is plain SHA-256 of the file's bytes.** Users verify it with
   `sha256sum`, so the input is never normalised.
-- **No `.env` loading.**
+- **`.env` loads as sqlx-cli loads it**, never overriding the process environment.
 - **Never use an em-dash or an en-dash** in code, comments or docs.
 
 ## Support

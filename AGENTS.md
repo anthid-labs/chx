@@ -38,8 +38,9 @@ refusal is unit tested without a server.
   databases. Add columns with defaults; never rename or retype one.
 - **The checksum is plain SHA-256 of the file bytes.** Users verify it with
   `sha256sum`. Do not normalise the input.
-- **No `.env` loading.** The URL comes from `CLICKHOUSE_URL` or
-  `--clickhouse-url`.
+- **`.env` loads as sqlx-cli loads it.** `dotenvy::dotenv()` before argument
+  parsing, so every `env` fallback sees it. It never overrides the process
+  environment, and only the binary loads it: the library takes a URL.
 - **Cluster support is best effort, and says so.** Where the history table
   lives is decided in `migrate::history::ensure_table`. A setup that cannot
   share it falls back or warns; it never fails a run that would work on one

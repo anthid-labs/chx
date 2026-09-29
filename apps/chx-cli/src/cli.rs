@@ -82,9 +82,8 @@ pub struct ImportArgs {
 pub struct Connection {
     /// `http[s]://user:password@host:port/database`.
     ///
-    /// From this flag or the process environment, never from a `.env` file.
-    /// A `.env` found by walking up from the working directory is a common way
-    /// to run a migration against a database nobody meant to name.
+    /// From this flag, else `CLICKHOUSE_URL` in the environment, else the
+    /// nearest `.env` above the working directory, as sqlx-cli resolves it.
     #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
     pub clickhouse_url: String,
 
