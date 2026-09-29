@@ -5,13 +5,22 @@
 //! is hermetic: every case fails before a connection is attempted, or points
 //! at a port nothing listens on.
 
+use std::path::Path;
 use std::process::{Command, Output};
 
 const CHX: &str = env!("CARGO_BIN_EXE_chx");
 
+/// Runs in an empty directory, so a `.env` above the checkout never reaches
+/// a test.
 fn chx(args: &[&str], database_url: Option<&str>) -> Output {
+    let cwd = tempfile::tempdir().unwrap();
+    chx_in(cwd.path(), args, database_url)
+}
+
+fn chx_in(cwd: &Path, args: &[&str], database_url: Option<&str>) -> Output {
     let mut command = Command::new(CHX);
     command
+        .current_dir(cwd)
         .args(args)
         .env_remove("CLICKHOUSE_URL")
         .env_remove("CLICKHOUSE_CLUSTER");
@@ -85,4 +94,48 @@ fn the_password_never_reaches_the_output() {
 
     assert!(!stderr(&output).contains("hunter2"), "{}", stderr(&output));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("hunter2"));
+}
+
+#[test]
+fn the_url_is_read_from_a_dotenv_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("1_init.sql"), "SELECT 1").unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        "CLICKHOUSE_URL=http://127.0.0.1:1/db\n",
+    )
+    .unwrap();
+
+    let output = chx_in(
+        dir.path(),
+        &["migrate", "run", "--source", dir.path().to_str().unwrap()],
+        None,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("unreachable"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn an_exported_url_wins_over_the_dotenv_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("1_init.sql"), "SELECT 1").unwrap();
+    std::fs::write(dir.path().join(".env"), "CLICKHOUSE_URL=not a url\n").unwrap();
+
+    let output = chx_in(
+        dir.path(),
+        &["migrate", "run", "--source", dir.path().to_str().unwrap()],
+        Some("http://127.0.0.1:1/db"),
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("unreachable"),
+        "{}",
+        stderr(&output)
+    );
 }

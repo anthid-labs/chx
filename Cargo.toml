@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/anthid-labs/chx"
@@ -37,7 +37,7 @@ opt-level = 0
 #
 # The library is `chx-core` because `chx` on crates.io is an unrelated hex
 # editor. The command it builds is still `chx`.
-chx-core = { path = "crates/chx-core", version = "0.1.0" }
+chx-core = { path = "crates/chx-core", version = "0.2.1" }
 
 # Async runtime
 # Features are chosen per crate: the library needs only a timer, and a runtime
@@ -60,6 +60,8 @@ sha2 = "0.11"
 
 # CLI
 clap = { version = "4.6", features = ["derive", "env"] }
+# `.env` loading, the same crate and behaviour as sqlx-cli.
+dotenvy = "0.15"
 
 # Errors
 thiserror = "2"

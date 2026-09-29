@@ -25,6 +25,13 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    // As sqlx-cli does: the nearest `.env`, found by walking up from the
+    // working directory, fills in variables the process does not already
+    // have. Loaded before parsing so clap's `env` fallbacks see it. A missing
+    // or unreadable file is not an error, and an exported variable always
+    // wins over the file.
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     // Logs go to stderr so stdout carries only what was applied. The default
