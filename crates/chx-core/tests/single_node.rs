@@ -21,6 +21,9 @@ async fn scratch(test: &str) -> Scratch {
     Scratch::new(SINGLE, test).await
 }
 
+/// The ordinary life of a migrations directory: a first run applies every
+/// file in version order, a second run finds nothing to do, and a file added
+/// later is the only thing the third run applies.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn applies_in_order_then_is_a_no_op_then_appends() {
@@ -73,6 +76,9 @@ async fn applies_in_order_then_is_a_no_op_then_appends() {
     scratch.drop().await;
 }
 
+/// A file changed after it ran no longer matches its recorded checksum. The
+/// run must stop on that before sending a single statement, including the
+/// statements of later, untouched migrations.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn an_edited_applied_migration_is_refused_before_anything_runs() {
@@ -111,6 +117,10 @@ async fn an_edited_applied_migration_is_refused_before_anything_runs() {
     scratch.drop().await;
 }
 
+/// The reason chx exists. ClickHouse DDL is not transactional, so a file that
+/// fails on its second statement has already applied its first. The history
+/// must say so, and the run after the fix must start at the statement that
+/// failed, not at the top.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn a_failed_migration_resumes_at_the_statement_that_failed() {
@@ -193,6 +203,8 @@ async fn a_failed_migration_resumes_at_the_statement_that_failed() {
     scratch.drop().await;
 }
 
+/// A file holding only a comment has no statements to send, and is still a
+/// migration: it is recorded as complete, with a statement count of zero.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn an_empty_migration_is_recorded() {
@@ -238,6 +250,10 @@ async fn an_unusable_cluster_falls_back_to_a_local_history() {
     scratch.drop().await;
 }
 
+/// One run at a time. With the lock held by a run that died, a run that
+/// waits a second gives up with `Locked`, naming the holder's process, and
+/// applies nothing. `unlock` releases it once, reports nothing to release
+/// the second time, and the same run then goes through.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn a_held_lock_stops_a_run_until_it_is_released() {
@@ -290,6 +306,8 @@ async fn a_held_lock_stops_a_run_until_it_is_released() {
     scratch.drop().await;
 }
 
+/// Two runs started together race for the lock on a real server. Exactly one
+/// wins and applies everything; the other waits, then finds nothing to do.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn concurrent_runs_apply_each_migration_once() {
@@ -323,6 +341,9 @@ async fn concurrent_runs_apply_each_migration_once() {
     scratch.drop().await;
 }
 
+/// Adopting a database whose schema already exists. `import --through` writes
+/// the history rows a completed run would have, runs nothing, and leaves
+/// later files for `run` to apply.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn import_records_a_hand_built_database_without_running_anything() {
@@ -389,6 +410,9 @@ async fn import_records_a_hand_built_database_without_running_anything() {
     scratch.drop().await;
 }
 
+/// Import only adds. A version already recorded with a different checksum, or
+/// left incomplete by a failed run, stops the import before any row is
+/// written.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn import_never_overwrites_recorded_history() {

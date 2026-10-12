@@ -1,0 +1,26 @@
+[package]
+name = "chx-types"
+description = "What chx and its macros agree on: the ClickHouse type model, the query parameter grammar, and the offline cache format."
+keywords = ["clickhouse", "types", "sql"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+percent-encoding = { workspace = true }
+
+# docs.rs builds with every feature, so each item shows up with the feature
+# that gates it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -14,10 +14,13 @@ use crate::error::{Error, Result};
 /// One migration file, read and checksummed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migration {
+    /// The integer before the first underscore of the file name.
     pub version: i64,
     /// From the file name, with underscores as spaces.
     pub description: String,
+    /// Where the file was read from.
     pub path: PathBuf,
+    /// The file's contents.
     pub sql: String,
     /// Lowercase hex SHA-256 of the file's bytes, exactly as `sha256sum`
     /// prints it. Nothing is normalised first: a change to line endings or

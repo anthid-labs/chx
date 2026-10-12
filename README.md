@@ -1,11 +1,29 @@
 # chx
 
-ClickHouse schema migrations, in the shape of `sqlx migrate`, built for the
+ClickHouse for Rust, in the shape of sqlx: queries checked at compile time,
+typed rows over RowBinary, bulk inserts, and schema migrations built for the
 way ClickHouse actually fails.
 
 [![✅ CI](https://github.com/anthid-labs/chx/actions/workflows/ci.yml/badge.svg)](https://github.com/anthid-labs/chx/actions/workflows/ci.yml)
 [![📦 Publish to crates.io](https://github.com/anthid-labs/chx/actions/workflows/publish.yml/badge.svg)](https://github.com/anthid-labs/chx/actions/workflows/publish.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+```rust
+let trades = chx::query!(
+    "SELECT id, venue, px FROM trades WHERE venue = {venue:String} LIMIT {n:UInt64}",
+    venue,
+    n = 10u64,
+)
+.fetch_all(&client)
+.await?;
+println!("{} at {}", trades[0].venue, trades[0].px);
+```
+
+The parameters come from the SQL, so a missing or mistyped argument is a
+compile error. The columns come from the database, through a `DESCRIBE` at
+compile time or the `.chx` cache that `chx prepare` writes, so `trades[0].px`
+is a `Decimal` because the column is. See
+[Compile-time checked queries](#compile-time-checked-queries).
 
 ```bash
 cargo install chx-cli
@@ -20,7 +38,20 @@ the schema.
 
 ## Why
 
-ClickHouse DDL is not transactional. A migration that fails on its third
+ClickHouse speaks SQL, but not the SQL the Rust ecosystem's tools assume. It
+has no prepared statements, so a driver cannot ask it what a query takes; it
+declares parameter types in the query text instead. Its types carry their own
+nullability, precision and scale, so a column is never ambiguous, but a value
+cannot be written without knowing them. And its DDL is not transactional.
+chx is built around each of those rather than around them.
+
+**Queries.** Parameters are ClickHouse's own `{name:Type}`, substituted server
+side. Rows travel as `RowBinaryWithNamesAndTypes`, whose header names and
+types every column, so a row is decoded as the types it really has and a
+result that drifted from what the code expects is refused rather than
+misread. `query!` and friends check all of this when the crate compiles.
+
+**Migrations.** ClickHouse DDL is not transactional. A migration that fails on its third
 statement has already applied the first two, and a tool that records a
 migration only when it finishes has no idea. The next run fails on the first
 `CREATE TABLE`, and you work out by hand which half of the file is live.
@@ -42,6 +73,14 @@ chx is built around that:
 ## Contents
 
 - [Install](#install)
+- [Quick start](#quick-start)
+- [Queries](#queries)
+- [Compile-time checked queries](#compile-time-checked-queries)
+- [The offline cache](#the-offline-cache)
+- [Bulk inserts](#bulk-inserts)
+- [Types](#types)
+- [Cookbook](#cookbook)
+- [Coming from the clickhouse crate](#coming-from-the-clickhouse-crate)
 - [Commands](#commands)
 - [Migrations](#migrations)
 - [What a run does](#what-a-run-does)
@@ -54,20 +93,714 @@ chx is built around that:
 - [The history table](#the-history-table)
 - [As a library](#as-a-library)
 - [Not done yet](#not-done-yet)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [Support](#support)
 - [License](#license)
 
 ## Install
 
+```toml
+[dependencies]
+chx-core = "0.3"
+```
+
 ```bash
 cargo install chx-cli
 ```
 
-The package is `chx-cli` and the command it installs is `chx`. The library is
-`chx-core`, because `chx` on crates.io is an unrelated hex editor.
+The library is `chx-core`, used as `chx`, because `chx` on crates.io is an
+unrelated hex editor. The command is `chx-cli`, installed as `chx`. Two more
+crates sit underneath and are not depended on directly: `chx-types`, the type
+model and cache format the library and the macros share, and `chx-macros`.
+
+Features of `chx-core`, all on by default: `macros` for `query!` and
+`#[derive(FromRow)]`, `chrono` for date and time columns, `uuid` for `UUID`.
 
 Rust 1.88 or newer.
+
+## Quick start
+
+A table, some rows, and a typed query, start to finish. This is
+[`examples/quickstart.rs`](crates/chx-core/examples/quickstart.rs) in short;
+the full file runs against any ClickHouse:
+
+```bash
+docker compose -f docker/compose.yaml up -d --wait single
+CLICKHOUSE_URL=http://default:chx@127.0.0.1:58123 cargo run -p chx-core --example quickstart
+```
+
+```sql
+-- migrations/20260101000000_create_trades.sql
+CREATE TABLE trades (
+    id UInt64,
+    venue LowCardinality(String),
+    px Decimal(38, 18),
+    ts DateTime64(9, 'UTC'),
+    tags Array(String),
+    note Nullable(String)
+) ENGINE = MergeTree ORDER BY id
+```
+
+```rust
+use chrono::{DateTime, Utc};
+use chx::migrate::Migrator;
+use chx::types::Decimal;
+use chx::{Client, FromRow};
+
+#[derive(Debug, FromRow)]
+struct Trade {
+    id: u64,
+    venue: String,
+    px: Decimal,
+    ts: DateTime<Utc>,
+    tags: Vec<String>,
+    note: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> chx::Result<()> {
+    let client = Client::from_url("http://default:@localhost:8123/analytics")?;
+
+    // Apply what has not run yet. A second call does nothing.
+    Migrator::from_dir("migrations")?.run(&client, |_| {}).await?;
+
+    // One request for the whole batch.
+    let mut insert = client
+        .insert("trades", &["id", "venue", "px", "ts", "tags", "note"])
+        .await?;
+    insert.write((1u64, "NYSE", "101.25".parse::<Decimal>()?, Utc::now(), vec!["open"], None::<&str>))?;
+    insert.write((2u64, "ARCA", "101.50".parse::<Decimal>()?, Utc::now(), Vec::<&str>::new(), Some("late")))?;
+    insert.end().await?;
+
+    // Parameters are declared in the SQL and bound by name.
+    let trades: Vec<Trade> = chx::query_as(
+        "SELECT id, venue, px, ts, tags, note FROM trades WHERE venue = {venue:String}",
+    )
+    .bind("venue", "NYSE")
+    .fetch_all(&client)
+    .await?;
+
+    println!("{trades:#?}");
+    Ok(())
+}
+```
+
+To have the query checked when the crate compiles, write it with `query_as!`
+instead and run `chx prepare` once; see
+[Compile-time checked queries](#compile-time-checked-queries).
+
+## Queries
+
+```rust
+use chx::{Client, FromRow};
+
+#[derive(FromRow)]
+struct Trade {
+    id: u64,
+    venue: String,
+    px: chx::types::Decimal,
+    note: Option<String>,
+}
+
+let client = Client::from_url("http://default:@localhost:8123/analytics")?;
+
+let trades: Vec<Trade> = chx::query_as(
+    "SELECT id, venue, px, note FROM trades WHERE venue = {venue:String} AND ts > {since:DateTime64(9)}",
+)
+.bind("venue", "NYSE")
+.bind("since", &since)
+.fetch_all(&client)
+.await?;
+
+let count: u64 = chx::query_scalar("SELECT count() FROM trades")
+    .fetch_one(&client)
+    .await?;
+```
+
+- **Parameters are declared in the SQL** as `{name:Type}` and bound by name.
+  The value is written in the text form the server reads parameters in and
+  sent as `param_name`; the server does the substitution. Binding a name the
+  query does not declare, a Rust type that cannot be written as the declared
+  type, or leaving a parameter unbound fails before anything is sent.
+- **Rows are `RowBinaryWithNamesAndTypes`.** The header carries every column's
+  name and type, and each column is decoded as that type into the Rust type
+  asked for. `Row::try_get("name")` or `try_get(index)` reads one column;
+  `#[derive(FromRow)]` reads a struct by field name, with
+  `#[chx(rename = "column")]` and `#[chx(default)]` for a column that may be
+  missing. Tuples read columns by position.
+- **`fetch_all`, `fetch_one`, `fetch_optional` and `execute`** do what they do
+  in sqlx. The whole body is read before any row is decoded; there is no
+  streaming yet.
+- **Settings** go in the URL, as for migrations:
+  `?max_execution_time=60`.
+
+A query can also say which columns it expects:
+
+```rust
+chx::query("SELECT id, venue FROM trades")
+    .expect_columns(&["id", "venue"])
+```
+
+A result with other columns fails with `Error::Schema` naming both lists. The
+checked macros set this from what the query was compiled against.
+
+## Compile-time checked queries
+
+```rust
+let trades = chx::query!(
+    "SELECT id, venue, px FROM trades WHERE venue = {venue:String} LIMIT {n:UInt64}",
+    venue,
+    n = 10u64,
+)
+.fetch_all(&client)
+.await?;
+```
+
+| Macro | Returns |
+| --- | --- |
+| `query!(sql, args..)` | Rows of an anonymous struct with a field per column. |
+| `query_as!(Struct, sql, args..)` | Rows of `Struct`, filled as a struct literal, so every field needs a column of its type and every column a field. `Struct` need not implement `FromRow`. |
+| `query_scalar!(sql, args..)` | The first column. |
+| `query_file!("path.sql", args..)` | `query!` with the SQL in a file, relative to `Cargo.toml`. The file is tracked, so editing it recompiles. |
+| `query_unchecked!(sql, args..)` | Parameters parsed and bound, nothing checked against a database. Rows come back as `Row`. |
+
+Arguments are `name = expr`, or a bare `name` for a variable of that name.
+There must be exactly one per parameter.
+
+A macro call is a query, not a connection. It takes the same `chx::Client`
+as everything else, at the point you fetch, so one client serves every
+macro, every hand-written query and every insert in a program. While
+compiling, the macro uses no client at all: it reads the `.chx` cache, or
+makes one short request of its own to `CLICKHOUSE_URL`.
+
+All five, in a program that runs:
+[`examples/checked.rs`](crates/chx-core/examples/checked.rs).
+
+```bash
+docker compose -f docker/compose.yaml up -d --wait single
+CLICKHOUSE_URL=http://default:chx@127.0.0.1:58123 cargo run -p chx-core --example checked
+```
+
+```text
+query!        1 buy 101.250000000000000000 [] Some("opening print")
+query!        2 sell 101.500000000000000000 [] None
+query_as!     1 NYSE 101.250000000000000000 2026-10-12 15:39:12.931930001 UTC Some("opening print")
+query_as!     2 NYSE 101.500000000000000000 2026-10-12 15:39:12.936562371 UTC None
+query_scalar! 2 buys
+query_file!   ids [3]
+override      id 2 kind 2
+unchecked     ids [1, 2, 3]
+ok
+```
+
+What is checked, and where it comes from:
+
+- **Parameters, from the text.** Each `{name:Type}` has one argument, and the
+  argument's Rust type binds as the declared type: `&str` or `String` for a
+  `String`, `Option<u64>` for `Nullable(UInt64)`, a slice or `Vec` for an
+  `Array`, a `BTreeMap` or `HashMap` for a `Map`, a reference to any of
+  them. A fixed-size array is not a list here, since `[u8; N]` is what
+  `FixedString(N)` binds as; pass `&array[..]`. The rule is the `chx::BindAs` trait; a type of your own implements it
+  alongside `Encode` to be accepted. No server is involved.
+- **Columns, from the database.** A `SELECT` is described with
+  `DESCRIBE TABLE (<query>)`, with placeholder values for the parameters, and
+  each column becomes a field of the mapped Rust type (see [Types](#types)).
+  An `INSERT INTO t (a, b)` checks that `t` has those columns. Any other
+  statement is parsed by the server and nothing more.
+- **At run time, the columns again.** The query carries the column list it
+  was compiled against, and a result with different columns fails with
+  `Error::Schema` before a row is read.
+
+A column can be read as another type by aliasing it `"name: path::Type"`,
+where the type implements `chx::Decode`:
+
+```rust
+chx::query!("SELECT kind AS \"kind: i8\" FROM trades")
+```
+
+Where the database comes from, in order:
+
+1. `CHX_OFFLINE=true`: only the `.chx` cache. A query with no entry is a
+   compile error that says to run `chx prepare`.
+2. `CLICKHOUSE_URL`, from the environment or the nearest `.env` at or above
+   the crate: the server. The schema the queries run against has to be
+   applied there.
+3. Neither: the cache if it has the query, else an error naming both ways
+   out.
+
+Two parameter types cannot be checked: `{t:Identifier}`, which has no
+placeholder, and any type the model does not know. Use `query_unchecked!` for
+those.
+
+## The offline cache
+
+```bash
+chx prepare            # write .chx from every query! in the crate
+chx prepare --check    # fail if .chx is stale; for CI
+```
+
+`.chx/query-<hash>.json` holds, per query, the text, the parameters parsed
+from it and the columns the server described. The hash is plain SHA-256 of
+the text, so `sha256sum` matches a file to its query. Check the directory in,
+and builds need no database.
+
+`chx prepare` runs `cargo check --all-targets` in the working directory with
+the macros told to save what they learn, then makes `.chx` exactly that set:
+stale files go, new and changed ones are written. Nothing is cleaned first:
+each checked macro makes its crate depend on the variable `prepare` sets, so
+cargo recompiles exactly the crates that hold a query, whatever state the
+target directory is in and whatever else, an editor included, is building in
+it.
+Arguments after `--` replace the `cargo check` arguments, for example
+`chx prepare -- --workspace`. It needs `CLICKHOUSE_URL`, from the
+environment or `.env`, as `chx migrate` does.
+
+The macros look for `.chx` in the crate's directory, then each directory
+above it, so a workspace can keep one at its root by running `chx prepare`
+there.
+
+## Bulk inserts
+
+```rust
+let mut insert = client.insert("trades", &["id", "venue", "px"]).await?;
+for trade in trades {
+    insert.write((trade.id, &trade.venue, trade.px))?;
+    if insert.buffered_bytes() > 8 << 20 {
+        insert.flush().await?;
+    }
+}
+let rows = insert.end().await?;
+```
+
+One `DESCRIBE TABLE` when the insert opens, so every value is encoded as the
+column really is, then one `INSERT ... FORMAT RowBinary` request per
+`flush`, however many rows it holds. A row is a tuple with one `Encode` value
+per column, in the order the columns were named, up to sixteen. A row that
+does not fit, such as a `u32` for a `UInt64` column or a `Decimal` with more
+places than the column's scale, is refused by `write` and the batch is left
+as it was.
+
+A struct becomes a row by implementing `IntoRow`, usually by lending its
+fields to a tuple:
+
+```rust
+use chx::{Column, IntoRow};
+
+struct Trade {
+    id: u64,
+    venue: String,
+    px: chx::types::Decimal,
+}
+
+impl IntoRow for Trade {
+    fn encode_row(&self, columns: &[Column], buf: &mut Vec<u8>) -> chx::Result<()> {
+        (self.id, &self.venue, self.px).encode_row(columns, buf)
+    }
+}
+
+let mut insert = client.insert("trades", &["id", "venue", "px"]).await?;
+for trade in &trades {
+    insert.write(trade)?;
+}
+insert.end().await?;
+```
+
+If a `flush` fails, the rows in that batch are gone with the request, and
+the error says how many. Whether ClickHouse stored some of them depends on
+the failure, so a caller that must not lose or repeat rows should make the
+insert idempotent, for example with a `ReplacingMergeTree` or
+`insert_deduplication_token` in the URL's settings.
+
+## Types
+
+| ClickHouse | Rust | Notes |
+| --- | --- | --- |
+| `UInt8` to `UInt128`, `Int8` to `Int128` | `u8` to `u128`, `i8` to `i128` | Exact width; a `u32` does not read a `UInt64`. |
+| `Float32`, `Float64` | `f32`, `f64` | |
+| `Bool` | `bool` | |
+| `String` | `String` | `chx::types::Bytes` for a string that is not UTF-8. |
+| `FixedString(N)` | `[u8; N]` | `String` reads it too, with the zero padding stripped. A value longer than `N` is refused before it is sent. |
+| `Date`, `Date32` | `chrono::NaiveDate` | |
+| `DateTime`, `DateTime64(P)` | `chrono::DateTime<Utc>` | An instant; the column's display timezone does not move it. `NaiveDateTime` is taken as UTC. |
+| `Decimal(P, S)`, P up to 38 | `chx::types::Decimal` | A mantissa and scale, rescaled to the column on write and refused if that loses digits. |
+| `UUID` | `uuid::Uuid` | |
+| `IPv4`, `IPv6` | `std::net::Ipv4Addr`, `Ipv6Addr` | |
+| `Enum8`, `Enum16` | `String` | By name. `i8` or `i16` reads the number. |
+| `Nullable(T)` | `Option<T>` | `Option<T>` also reads a plain `T`. |
+| `LowCardinality(T)` | as `T` | Serialised as `T`. |
+| `Array(T)` | `Vec<T>` | Slices write too. |
+| `Map(K, V)` | `Vec<(K, V)>`, `BTreeMap`, `HashMap` | On the wire a map is an array of pairs. |
+| `Tuple(A, B, ..)` | `(A, B, ..)` | Up to twelve elements. Named tuples read by position. |
+| `UInt256`, `Int256`, `JSON`, `Dynamic`, `Variant`, `AggregateFunction` | none | Cast in the query, for example with `toString()`. |
+
+The same mapping decides what a parameter binds as and what a `query!` field
+is. `chx::Encode` and `chx::Decode` are the traits behind it, each taking the
+ClickHouse type so a `DateTime64` knows its precision and a `Decimal` its
+scale; implement them for a type of your own, as shown in the
+[cookbook](#a-type-of-your-own).
+
+## Cookbook
+
+Each of these is checked somewhere: as a doc test in the crate, in
+`examples/quickstart.rs`, or in the live suites.
+
+### One value, one row, maybe a row
+
+```rust
+let count: u64 = chx::query_scalar("SELECT count() FROM trades")
+    .fetch_one(&client)
+    .await?;
+
+let latest: Option<Trade> = chx::query_as("SELECT * FROM trades ORDER BY ts DESC LIMIT 1")
+    .fetch_optional(&client)
+    .await?;
+
+// `fetch_one` on nothing is `Error::RowNotFound`.
+let trade: Trade = chx::query_as("SELECT * FROM trades WHERE id = {id:UInt64}")
+    .bind("id", &7u64)
+    .fetch_one(&client)
+    .await?;
+```
+
+### Tuples instead of a struct
+
+```rust
+let pairs: Vec<(String, u64)> =
+    chx::query_as("SELECT venue, count() FROM trades GROUP BY venue")
+        .fetch_all(&client)
+        .await?;
+```
+
+### Rows without a type
+
+```rust
+let rows = chx::query("SELECT * FROM trades LIMIT 10").fetch_all(&client).await?;
+for row in &rows {
+    for column in row.columns() {
+        println!("{}: {}", column.name, column.ty);
+    }
+    let id: u64 = row.try_get("id")?;
+    let note: Option<String> = row.try_get("note")?;
+}
+```
+
+### Renamed and optional columns
+
+```rust
+#[derive(chx::FromRow)]
+struct VenueStats {
+    venue: String,
+    #[chx(rename = "n")]
+    trades: u64,
+    // Filled with `Default::default()` when the query does not select it.
+    #[chx(default)]
+    last_px: Option<chx::types::Decimal>,
+}
+
+let stats: Vec<VenueStats> =
+    chx::query_as("SELECT venue, count() AS n FROM trades GROUP BY venue")
+        .fetch_all(&client)
+        .await?;
+```
+
+### Parameters of every shape
+
+```rust
+use std::collections::BTreeMap;
+
+let rows = chx::query(
+    "SELECT * FROM trades \
+     WHERE venue IN {venues:Array(String)} \
+       AND ts >= {since:DateTime64(9)} \
+       AND day = {day:Date} \
+       AND px > {floor:Decimal(38, 18)} \
+       AND (note = {note:Nullable(String)} OR isNull({note:Nullable(String)})) \
+       AND kind = {kind:Enum8('buy' = 1, 'sell' = 2)} \
+       AND {weights:Map(String, UInt8)}[venue] > 0",
+)
+.bind("venues", &["NYSE", "ARCA"][..])      // a slice or a Vec
+.bind("since", &since)                      // chrono::DateTime<Utc>
+.bind("day", &day)                          // chrono::NaiveDate
+.bind("floor", &"99.5".parse::<Decimal>()?) // rescaled to the declared scale
+.bind("note", &None::<String>)              // NULL
+.bind("kind", "sell")                       // an enum by name
+.bind("weights", &BTreeMap::from([("NYSE", 1u8)]))
+.fetch_all(&client)
+.await?;
+```
+
+A parameter that appears twice, like `note` above, is bound once. Its two
+declarations have to agree on the type.
+
+### A table name as a parameter
+
+```rust
+let rows = chx::query("SELECT count() AS n FROM {table:Identifier}")
+    .bind("table", "trades")
+    .fetch_all(&client)
+    .await?;
+```
+
+The server substitutes an `Identifier` as a name, not a string, so this is
+not string interpolation. It is the one kind of query the checked macros
+cannot check; from them, use `query_unchecked!`.
+
+### Statements that return nothing
+
+```rust
+chx::query("ALTER TABLE trades DELETE WHERE ts < {cutoff:DateTime64(9)}")
+    .bind("cutoff", &cutoff)
+    .execute(&client)
+    .await?;
+
+// No parameters, no result: the client alone is enough.
+client.execute("OPTIMIZE TABLE trades FINAL").await?;
+```
+
+Mutations wait until they are done on every replica, because every request
+carries `mutations_sync=2`.
+
+### Decimals
+
+```rust
+use chx::types::Decimal;
+
+let px: Decimal = "101.2500".parse()?;      // mantissa 1012500, scale 4
+assert_eq!(px.to_string(), "101.2500");
+assert_eq!(px.rescale(2)?.to_string(), "101.25");
+assert!(px.rescale(1).is_err());            // would lose a digit
+
+// From your own decimal type: its mantissa and scale.
+let px = Decimal::new(1_012_500, 4);
+```
+
+`Decimal` is the wire form, not an arithmetic type. A value read from a
+`Decimal(38, 18)` column has scale 18; a value written to one is rescaled to
+18, or refused if that would drop digits or overflow the column.
+
+### Checked queries
+
+These are the same calls [`examples/checked.rs`](crates/chx-core/examples/checked.rs)
+runs.
+
+```rust
+// Fields come from the columns: `id: u64`, `venue: String`, `note: Option<String>`.
+let rows = chx::query!(
+    "SELECT id, venue, note FROM trades WHERE venue = {venue:String}",
+    venue = "NYSE",
+)
+.fetch_all(&client)
+.await?;
+
+// Into your own struct, by field name. No derive needed.
+struct Trade { id: u64, venue: String }
+let trades = chx::query_as!(Trade, "SELECT id, venue FROM trades")
+    .fetch_all(&client)
+    .await?;
+
+let count = chx::query_scalar!("SELECT count() FROM trades").fetch_one(&client).await?;
+
+// SQL in a file, relative to Cargo.toml.
+let rows = chx::query_file!("queries/trades_by_venue.sql", venue = "NYSE")
+    .fetch_all(&client)
+    .await?;
+
+// An INSERT is checked against the table's columns.
+chx::query!(
+    "INSERT INTO trades (id, venue) VALUES ({id:UInt64}, {venue:String})",
+    id = 7u64,
+    venue = "IEX",
+)
+.execute(&client)
+.await?;
+
+// Read a column as another type: an enum as its number.
+let row = chx::query!("SELECT kind AS \"kind: i8\" FROM trades LIMIT 1")
+    .fetch_one(&client)
+    .await?;
+```
+
+What a mistake looks like, at compile time. Each of these is a real message,
+pointing at the query or the argument:
+
+```text
+error: no argument for parameter venue
+
+error: the query has no parameter {vneue:...}
+
+error: column "count()" is not a Rust identifier; alias it with AS
+
+error: ClickHouse returned 404 Not Found: Code: 60. DB::Exception: Unknown table
+       expression identifier 'tradez' in scope SELECT * FROM tradez. (UNKNOWN_TABLE)
+
+error: ClickHouse returned 404 Not Found: Code: 47. DB::Exception: Unknown expression
+       identifier `nmae` in scope SELECT nmae FROM system.tables. Maybe you meant:
+       ['name']. (UNKNOWN_IDENTIFIER)
+
+error[E0277]: the trait bound `u32: BindAs<std::string::String>` is not satisfied
+
+error[E0308]: `?` operator has incompatible types
+```
+
+The last two are the compiler's own: an argument of the wrong type for its
+parameter, and a `query_as!` struct whose field is not the type its column
+maps to.
+
+### A type of your own
+
+```rust
+use chx::decode::{Decode, Reader};
+use chx::{BindAs, Encode, Result, Type};
+
+/// A ticker symbol, stored as a String column.
+struct Symbol(String);
+
+impl Decode for Symbol {
+    fn accepts(ty: &Type) -> bool {
+        String::accepts(ty)
+    }
+    fn decode(reader: &mut Reader<'_>, ty: &Type) -> Result<Self> {
+        String::decode(reader, ty).map(Symbol)
+    }
+}
+
+impl Encode for Symbol {
+    fn accepts(ty: &Type) -> bool {
+        String::accepts(ty)
+    }
+    fn encode(&self, ty: &Type, buf: &mut Vec<u8>) -> Result<()> {
+        self.0.encode(ty, buf)
+    }
+    fn encode_text(&self, ty: &Type, out: &mut String, nested: bool) -> Result<()> {
+        self.0.encode_text(ty, out, nested)
+    }
+}
+
+// Lets the checked macros take a Symbol where the SQL says String.
+impl BindAs<String> for Symbol {}
+```
+
+`Symbol` now works as a struct field under `#[derive(FromRow)]`, as a value
+in an insert row, as a `.bind` argument, and, with the alias
+`AS "symbol: Symbol"`, as a field of a `query!` record.
+
+### Acting on an error
+
+```rust
+use chx::Error;
+
+match chx::query("SELECT * FROM trades").fetch_all(&client).await {
+    Ok(rows) => println!("{} rows", rows.len()),
+    // The exception code, never the message text, which changes by release.
+    Err(Error::ClickHouse { code: Some(60), .. }) => eprintln!("run the migrations first"),
+    Err(Error::Transport(err)) => eprintln!("ClickHouse is unreachable: {err}"),
+    Err(Error::Schema(what)) => eprintln!("the schema changed since `chx prepare`: {what}"),
+    Err(other) => return Err(other),
+}
+```
+
+### Migrations from your own binary
+
+```rust
+use std::time::Duration;
+
+use chx::migrate::Migrator;
+
+let applied = Migrator::from_dir("migrations")?
+    .on_cluster("prod")
+    .lock_timeout(Duration::from_secs(60))
+    .run(&client, |done| tracing::info!(version = done.version, "applied"))
+    .await?;
+```
+
+### In CI
+
+```yaml
+- name: Queries are checked against the cache, never a database
+  run: cargo build --locked
+  env:
+    CHX_OFFLINE: "true"
+
+# Optional, with a ClickHouse service container and the schema applied:
+- name: The cache is current
+  run: |
+    chx migrate run
+    chx prepare --check
+  env:
+    CLICKHOUSE_URL: http://default:@localhost:8123/analytics
+```
+
+To make every build in a repository offline, whatever a contributor has
+exported, set it once in `.cargo/config.toml`:
+
+```toml
+[env]
+CHX_OFFLINE = "true"
+```
+
+`chx prepare` overrides it for the one build that is meant to connect.
+
+## Coming from the clickhouse crate
+
+chx does not take the [`clickhouse`](https://crates.io/crates/clickhouse)
+crate's `Client`, and has no adapter for it: the macros generate calls into
+chx's own query builder. The two do run side by side. Both speak HTTP to the
+same server, so a service can build one of each from the same URL and move a
+query at a time.
+
+Moving a query changes three things.
+
+```rust
+// Before: the clickhouse crate.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct Trade {
+    id: u64,
+    venue: String,
+    note: Option<String>,
+}
+
+let trades = client
+    .query("SELECT ?fields FROM trades WHERE venue = ? AND id > ?")
+    .bind("NYSE")
+    .bind(100u64)
+    .fetch_all::<Trade>()
+    .await?;
+```
+
+```rust
+// After: chx, checked when the crate compiles.
+struct Trade {
+    id: u64,
+    venue: String,
+    note: Option<String>,
+}
+
+let trades = chx::query_as!(
+    Trade,
+    "SELECT id, venue, note FROM trades WHERE venue = {venue:String} AND id > {min:UInt64}",
+    venue = "NYSE",
+    min = 100u64,
+)
+.fetch_all(&client)
+.await?;
+```
+
+| | `clickhouse` crate | chx |
+| --- | --- | --- |
+| Parameters | `?`, by position, substituted into the SQL by the client. | `{name:Type}`, by name, sent beside the SQL and substituted by the server. |
+| Columns | `?fields`, filled from the struct. | Written out. The macro checks them against the struct. |
+| Row type | `#[derive(Row, Deserialize)]`, through serde. | No derive with `query_as!`; `#[derive(chx::FromRow)]`, read by name, with `chx::query_as`. |
+| A query that does not fit its struct | Found at run time, when the query is fetched. | A compile error. A schema that drifted after the build is `Error::Schema` before a row is read. |
+| Inserts | An insert typed by a serde row struct. | `client.insert("t", &[columns])`, rows as tuples or `IntoRow`, encoded against the table's real column types. |
+
+Field types can change with the move. A `Decimal` column is
+`chx::types::Decimal`, a mantissa and a scale taken from the column. A
+`DateTime64` is a `chrono::DateTime<Utc>` with no serde adapter attribute
+on the field, since the precision comes from the server.
+
+This comparison is against `clickhouse` 0.15. Check its documentation for
+what a later release does.
 
 ## Commands
 
@@ -76,19 +809,19 @@ Rust 1.88 or newer.
 | `chx migrate run` | Apply every pending migration, in version order. |
 | `chx migrate import` | Record migrations as applied without running them, for a database built by hand. |
 | `chx migrate unlock` | Release the lock left by a run that died holding it. |
+| `chx prepare` | Check every `query!` against the database and write `.chx`. `--check` fails if `.chx` is stale instead. |
 
 Options, each with the environment variable it falls back to:
 
 | Flag | Environment | Default | Used by |
 | --- | --- | --- | --- |
 | `--clickhouse-url` | `CLICKHOUSE_URL` | required | all |
-| `--cluster` | `CLICKHOUSE_CLUSTER` | none | all |
+| `--cluster` | `CLICKHOUSE_CLUSTER` | none | `migrate` |
 | `--source` | | `migrations` | `run`, `import` |
 | `--lock-timeout` | `CHX_LOCK_TIMEOUT` | `300` seconds | `run`, `import` |
 | `--through` | | every file | `import` |
+| `--check` | | off | `prepare` |
 | `--log-level` | `LOG_LEVEL` | `warn` | all |
-
-`all` means every `chx migrate` command.
 
 `RUST_LOG` takes precedence over `--log-level`. Logs go to stderr; stdout
 carries one line per applied migration.
@@ -410,8 +1143,56 @@ anything that wants to know what a run would do without running it.
 ## Not done yet
 
 - No `info`, `add` or `revert` commands.
-- No `$$` heredoc strings in the statement splitter.
+- No `$tag$ ... $tag$` heredoc strings in the statement splitter.
 - No native protocol.
+- No streaming reads: a result is read whole before the first row is decoded.
+- No derive for insert rows; a row is a tuple, or a struct that implements
+  `IntoRow`.
+- No `JSON`, `Dynamic`, `Variant` or 256-bit types.
+- A `.env` is read by the macros from the crate's directory upward, as the
+  command reads it from the working directory. Check which one a crate
+  resolves to.
+
+## Testing
+
+Three layers, each proving something the one before cannot.
+
+| Layer | Command | Needs | Proves |
+| --- | --- | --- | --- |
+| Unit tests | `cargo test --workspace` | nothing | Every codec byte layout and text form, the type parser, the parameter scanner, the history planner, macro expansion, and the client, queries, inserts, migrations and the `chx` command against an in-process fake ClickHouse. |
+| Live tests | `cargo test -p chx-core -p chx-cli -- --ignored` | Docker | That the same things hold against ClickHouse itself: a single server and a two-node cluster with Keeper. |
+| Doc tests | part of `cargo test --workspace` | nothing | That the examples in the API documentation compile and, where they can, run. |
+
+The unit suite runs in about two seconds and reaches the paths a real server
+will not take on demand: a statement that fails partway, a cluster that
+refuses, a lock that is released while another run waits, a body cut short.
+The fake lives in `crates/chx-core/src/testing.rs` and recognises the
+statements chx sends by a fragment of their text, so changing one of those
+statements shows up as a test that no longer matches.
+
+Line coverage of the hermetic suite, measured with
+[`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+
+```bash
+cargo llvm-cov --workspace --all-features
+```
+
+CI builds the same report as HTML on every run, along with a `cargo audit`
+of `Cargo.lock`, and keeps both as artifacts named `coverage-html` and
+`cargo-audit` on the run's summary page.
+
+| Crate | Lines covered |
+| --- | --- |
+| `chx-types` | 99.4% |
+| `chx-core` | 97.9% |
+| `chx-macros` | 97.5% |
+| `chx-cli` | 94.7% |
+| Workspace | 97.9% |
+
+Measured at 0.3.0, with no server. What is left is mostly what a test
+cannot reach from inside the process: the proc-macro entry points, which
+only the compiler calls, the branches for a feature that is switched off,
+and invariant checks that would mean a bug in chx if they ever fired.
 
 ## Contributing
 
@@ -435,8 +1216,10 @@ The default suite needs no Docker and no network.
 
 | Path | What lives there |
 | --- | --- |
-| `crates/chx-core` | The engine. Anything that reads, checks or runs a migration. |
-| `apps/chx-cli` | The `chx` binary: arguments, logging and the exit code. |
+| `crates/chx-types` | What the library and the macros agree on: the type model and parser, the `{name:Type}` grammar, the connection URL, the `.chx` file format. No I/O. |
+| `crates/chx-macros` | `query!` and friends, `#[derive(FromRow)]`. Depends on `chx-types`, never on `chx-core`. |
+| `crates/chx-core` | The library, `chx`. Queries, rows, codecs, inserts, migrations. Re-exports the macros. |
+| `apps/chx-cli` | The `chx` binary: arguments, logging, `prepare`, and the exit code. |
 | `docker/compose.yaml` | The ClickHouse servers the live tests run against. |
 
 Inside the library, `migrate::source` reads files, `migrate::split` cuts them
@@ -445,14 +1228,48 @@ owns `_chx_lock`, and `migrate::plan` checks one against the other. `plan` is
 pure, so every refusal is unit tested without a server. `migrate::import_plan`
 does the same for `import`.
 
+For queries, `encode` and `decode` are the codecs, each driven by the
+ClickHouse type; `row` cuts a `RowBinaryWithNamesAndTypes` body into rows and
+columns; `query` binds parameters and fetches; `insert` batches rows. In the
+macros, `describe` decides where a query's columns come from, `rust_type`
+maps a column to a Rust type, and `expand` writes the code.
+
 ### Live tests
 
 ```bash
 cargo test -p chx-core -- --ignored
+cargo test -p chx-cli -- --ignored
 ```
 
 They are `#[ignore]`d so the default suite stays hermetic, and they start the
 compose stack themselves:
+
+The live suites, and what each one is for:
+
+| Suite | Against | Proves |
+| --- | --- | --- |
+| `chx-core` `single_node` | one server | Migrations: order, checksums, resume, the lock, import. |
+| `chx-core` `cluster` | two nodes, one Keeper | One history and one lock for the whole cluster. |
+| `chx-core` `query` | one server | Every type through RowBinary and through parameters, fetching, inserts. |
+| `chx-core` `macros` | one server | The checked macros, compiled from the cache, run for real. |
+| `chx-cli` `prepare` | one server | `prepare --check` against the checked-in cache. |
+
+Every test has a doc comment saying what it proves, and every suite a header
+saying how to run it alone.
+
+`tests/macros.rs` in `chx-core` compiles against the `.chx` directory next to
+it, which is checked in, and `.cargo/config.toml` sets `CHX_OFFLINE=true` so
+no build in this repository connects by accident. After changing a query
+there, regenerate the cache against a database holding the tables in
+`tests/fixture`, with the compose server up:
+
+```bash
+cd crates/chx-core
+CLICKHOUSE_URL=http://default:chx@127.0.0.1:58123/<database> cargo run -p chx-cli -- prepare
+```
+
+The `chx-cli` live suite runs `prepare --check` against that cache, so a
+stale one fails there.
 
 - `single`: one server on `127.0.0.1:58123`.
 - `ch-1` and `ch-2`: cluster `chx` on `127.0.0.1:58124` and `58125`, two

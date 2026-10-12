@@ -1,0 +1,14 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT count() FROM probe",
+  "describe": {
+    "parameters": [],
+    "columns": [
+      {
+        "name": "count()",
+        "type": "UInt64"
+      }
+    ]
+  },
+  "hash": "acd492af6d945460fc3a6d0d44982df52f599924e85d6ff7b86cb4d3c6182918"
+}

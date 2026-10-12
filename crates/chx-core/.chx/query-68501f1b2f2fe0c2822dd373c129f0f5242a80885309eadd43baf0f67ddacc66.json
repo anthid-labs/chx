@@ -1,0 +1,23 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT id, kind AS \"kind: i8\" FROM probe WHERE id = {id:UInt64}",
+  "describe": {
+    "parameters": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      }
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "kind: i8",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      }
+    ]
+  },
+  "hash": "68501f1b2f2fe0c2822dd373c129f0f5242a80885309eadd43baf0f67ddacc66"
+}

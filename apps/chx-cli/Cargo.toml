@@ -1,6 +1,6 @@
 [package]
 name = "chx-cli"
-description = "Command line interface for chx: run ClickHouse schema migrations in order, with checksummed history."
+description = "Command line interface for chx: run ClickHouse schema migrations with checksummed history, and prepare the offline cache for compile-time checked queries."
 keywords = ["clickhouse", "migrations", "database", "cli"]
 categories = ["command-line-utilities", "database"]
 readme = "README.md"
@@ -11,15 +11,22 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# The tests include files from elsewhere in the repository by path, so they
+# cannot build from the published package. The package is the binary.
+exclude = ["tests/"]
 
 # The package is `chx-cli` so it can be published alongside the library, but
 # the command it installs is `chx`.
 [[bin]]
 name = "chx"
 path = "src/main.rs"
+# The library is also `chx`, and two crates cannot document to one directory.
+# The command's documentation is its `--help` and the README.
+doc = false
 
 [dependencies]
 chx-core = { workspace = true }
+chx-types = { workspace = true }
 
 clap = { workspace = true }
 dotenvy = { workspace = true }
@@ -27,6 +34,11 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
+# `chx prepare` collects what the macros wrote into a directory that lives
+# only for the run.
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+# The fake ClickHouse from chx-core's test support, included by path in
+# tests/migrate.rs, parses request URLs with this.
+url = { workspace = true }

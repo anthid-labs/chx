@@ -1,0 +1,19 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT count() FROM probe WHERE kind = {kind:Enum8('buy' = 1, 'sell' = 2)}",
+  "describe": {
+    "parameters": [
+      {
+        "name": "kind",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      }
+    ],
+    "columns": [
+      {
+        "name": "count()",
+        "type": "UInt64"
+      }
+    ]
+  },
+  "hash": "969615c8e328390c7e23aed57f0fdf28d186b45493e0fed9404bfd3d7284c8de"
+}

@@ -1,0 +1,27 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT id, venue, note FROM probe WHERE id >= {min:UInt64} ORDER BY id",
+  "describe": {
+    "parameters": [
+      {
+        "name": "min",
+        "type": "UInt64"
+      }
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "venue",
+        "type": "LowCardinality(String)"
+      },
+      {
+        "name": "note",
+        "type": "Nullable(String)"
+      }
+    ]
+  },
+  "hash": "2c869231b108c1ebcbe735270e24dfd89767841305c6f16ed15dd3c8f5f0ea42"
+}

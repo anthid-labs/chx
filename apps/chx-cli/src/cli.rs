@@ -1,10 +1,11 @@
 //! The `chx` command line.
 //!
-//! Three commands: `chx migrate run`; `chx migrate import`, for a database
-//! built by hand from the same files; and `chx migrate unlock`, for the lock a
-//! dead run left behind. Nothing in this module decides
-//! anything about a migration. It parses arguments, calls
-//! [`Migrator`](chx::migrate::Migrator), and prints the result.
+//! Four commands: `chx migrate run`; `chx migrate import`, for a database
+//! built by hand from the same files; `chx migrate unlock`, for the lock a
+//! dead run left behind; and `chx prepare`, which writes the `.chx` cache
+//! the query macros compile against. Nothing in this module decides anything
+//! about a migration or a query. It parses arguments, calls the library, and
+//! prints the result.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,6 +15,8 @@ use clap::{Args, Parser, Subcommand};
 use chx::client::Client;
 use chx::error::Result;
 use chx::migrate::{self, Applied, DEFAULT_LOCK_TIMEOUT, Imported, Migrator};
+
+use crate::prepare;
 
 #[derive(Debug, Parser)]
 #[command(name = "chx", version, about = "ClickHouse schema migrations")]
@@ -31,6 +34,31 @@ pub enum Command {
     /// Work with the migrations directory.
     #[command(subcommand)]
     Migrate(Migrate),
+
+    /// Check every `query!` in the crate against the database and write the
+    /// results to `.chx`, so later builds need no database.
+    ///
+    /// Runs `cargo check` with the macros told to save what they learn, then
+    /// replaces `.chx/query-*.json` with the result. Arguments after `--`
+    /// go to `cargo check`, for example `-- --workspace`.
+    Prepare(PrepareArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PrepareArgs {
+    /// `http[s]://user:password@host:port/database`, with the schema the
+    /// queries run against already applied.
+    #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
+    pub clickhouse_url: String,
+
+    /// Fail if `.chx` is not exactly what the queries would write now,
+    /// instead of writing it. For CI.
+    #[arg(long)]
+    pub check: bool,
+
+    /// Arguments passed through to `cargo check`.
+    #[arg(last = true)]
+    pub cargo_args: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -103,6 +131,7 @@ impl Cli {
             Command::Migrate(Migrate::Run(args)) => migrate_run(args).await,
             Command::Migrate(Migrate::Import(args)) => migrate_import(args).await,
             Command::Migrate(Migrate::Unlock(connection)) => migrate_unlock(connection).await,
+            Command::Prepare(args) => prepare::run(args),
         }
     }
 }

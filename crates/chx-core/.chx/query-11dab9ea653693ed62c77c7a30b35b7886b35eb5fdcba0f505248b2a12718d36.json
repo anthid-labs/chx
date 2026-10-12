@@ -1,0 +1,34 @@
+{
+  "db_name": "ClickHouse",
+  "query": "INSERT INTO probe (id, venue, px, ts, kind, note) VALUES ({id:UInt64}, {venue:String}, {px:Decimal(38, 18)}, {ts:DateTime64(9)}, {kind:Enum8('buy' = 1, 'sell' = 2)}, {note:Nullable(String)})",
+  "describe": {
+    "parameters": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "venue",
+        "type": "String"
+      },
+      {
+        "name": "px",
+        "type": "Decimal(38, 18)"
+      },
+      {
+        "name": "ts",
+        "type": "DateTime64(9)"
+      },
+      {
+        "name": "kind",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      },
+      {
+        "name": "note",
+        "type": "Nullable(String)"
+      }
+    ],
+    "columns": []
+  },
+  "hash": "11dab9ea653693ed62c77c7a30b35b7886b35eb5fdcba0f505248b2a12718d36"
+}
