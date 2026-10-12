@@ -32,11 +32,15 @@ jobs:
       - name: Check version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
-          pin=$(sed -n 's/^chx-core = .*version = "\(.*\)".*/\1/p' Cargo.toml)
-          if [ "$pin" != "$version" ]; then
-            echo "::error file=Cargo.toml::chx-core is pinned to $pin in [workspace.dependencies], but the workspace version is $version"
-            exit 1
-          fi
+          # Every local crate is published, so every pin has to move with
+          # the workspace version.
+          for crate in chx-types chx-macros chx-core; do
+            pin=$(sed -n "s/^$crate = .*version = \"\([^\"]*\)\".*/\1/p" Cargo.toml)
+            if [ "$pin" != "$version" ]; then
+              echo "::error file=Cargo.toml::$crate is pinned to $pin in [workspace.dependencies], but the workspace version is $version"
+              exit 1
+            fi
+          done
           if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
             echo "::error file=Cargo.toml::v$version is already released. Bump version in the root Cargo.toml and the chx-core pin with it."
             exit 1
@@ -70,6 +74,74 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace
 
+      # What docs.rs will build. Every public item is documented and every
+      # link resolves, or this fails.
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Two reports, kept with the run: line coverage of the hermetic suite as
+  # HTML, and the advisory audit of Cargo.lock. Download them from the run's
+  # summary page, under Artifacts.
+  reports:
+    name: Coverage and audit reports
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      # Also caches ~/.cargo/bin, so the two tools are built once, not on
+      # every run.
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov and cargo-audit
+        run: cargo install cargo-llvm-cov cargo-audit --locked
+
+      # The same hermetic suite as the unit test job, instrumented. No
+      # Docker: the live suites are not part of this number.
+      - name: Coverage report
+        run: cargo llvm-cov --workspace --all-features --html
+
+      - name: Coverage summary
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report --summary-only >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # An advisory in a dependency marks this step failed without failing
+      # the job: a release should not be blocked by a report, and the report
+      # is uploaded either way.
+      - name: Audit report
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo audit --color never | tee audit.txt
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html
+          if-no-files-found: error
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-audit
+          path: audit.txt
+          if-no-files-found: error
+
   integration:
     name: Integration tests (ClickHouse)
     runs-on: ubuntu-latest
@@ -91,6 +163,10 @@ jobs:
       # a two-node cluster with Keeper.
       - name: Run integration tests
         run: cargo test -p chx-core -- --ignored
+
+      # `prepare --check` against the checked-in .chx cache.
+      - name: Run CLI integration tests
+        run: cargo test -p chx-cli -- --ignored
 
       - name: ClickHouse logs
         if: failure()

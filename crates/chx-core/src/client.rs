@@ -3,7 +3,7 @@
 //! Four operations: run a statement, run a query and read its body as text,
 //! run a query with parameters and read its body in a named format, and send
 //! an `INSERT` with its data in the body. Everything typed is built on the
-//! last two, in [`crate::query`] and [`crate::insert`]. Keeping the client
+//! last two, in [`mod@crate::query`] and [`mod@crate::insert`]. Keeping the client
 //! this small is what lets chx stay off the native protocol and work against
 //! every deployment, ClickHouse Cloud included.
 
@@ -13,6 +13,32 @@ use reqwest::header::HeaderValue;
 use crate::error::{Error, Result};
 
 /// A connection to one ClickHouse server and database.
+///
+/// Cheap to clone: clones share one connection pool. Nothing is sent until
+/// the first statement.
+///
+/// ```no_run
+/// # async fn example() -> chx::Result<()> {
+/// use chx::Client;
+///
+/// // Settings in the query string apply to every request.
+/// let client = Client::from_url(
+///     "https://reader:s3cret@clickhouse.internal:8443/analytics?max_execution_time=60",
+/// )?;
+///
+/// client.execute("CREATE TABLE IF NOT EXISTS t (id UInt64) ENGINE = Memory").await?;
+/// let version = client.query("SELECT version()").await?;
+/// println!("ClickHouse {}", version.trim());
+///
+/// // The same server and credentials, another database.
+/// let staging = client.with_database("staging");
+/// assert_eq!(staging.database(), Some("staging"));
+/// # Ok(())
+/// # }
+/// ```
+///
+/// For typed results and parameters, use [`chx::query`](crate::query()) and
+/// its relatives; for loading data, [`Client::insert`].
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -153,5 +179,184 @@ mod tests {
 
         assert_eq!(client.database(), Some("two"));
         assert_eq!(client.endpoint.user(), Some("reader"));
+    }
+
+    use crate::testing::{Fake, Response};
+
+    #[tokio::test]
+    async fn credentials_travel_as_headers_and_never_in_the_url() {
+        let fake = Fake::always(Response::ok("1\n"));
+
+        assert_eq!(fake.client().query("SELECT 1").await.unwrap(), "1\n");
+
+        let request = fake.last();
+        assert_eq!(request.header("x-clickhouse-user"), Some("tester"));
+        assert_eq!(request.header("x-clickhouse-key"), Some("s3cret"));
+        assert!(request.query.iter().all(|(_, value)| value != "s3cret"));
+        assert_eq!(request.sql(), "SELECT 1");
+    }
+
+    #[tokio::test]
+    async fn every_request_carries_the_database_and_the_safety_settings() {
+        let fake = Fake::always(Response::empty());
+
+        fake.client().execute("DROP TABLE t").await.unwrap();
+
+        let request = fake.last();
+        assert_eq!(request.param("database"), Some("analytics"));
+        assert_eq!(request.param("wait_end_of_query"), Some("1"));
+        assert_eq!(request.param("async_insert"), Some("0"));
+        assert_eq!(request.param("mutations_sync"), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn a_client_without_credentials_sends_no_auth_headers() {
+        let fake = Fake::always(Response::empty());
+        let client = Client::from_url(&fake.url).unwrap();
+
+        client.execute("SELECT 1").await.unwrap();
+
+        let request = fake.last();
+        assert_eq!(request.header("x-clickhouse-user"), None);
+        assert_eq!(request.header("x-clickhouse-key"), None);
+        assert_eq!(request.param("database"), None);
+        assert_eq!(client.database(), None);
+    }
+
+    #[tokio::test]
+    async fn parameters_and_format_go_in_the_url() {
+        let fake = Fake::always(Response::empty());
+
+        fake.client()
+            .query_bytes(
+                "SELECT {a:String}",
+                &[("a".to_string(), "x y&z".to_string())],
+                Some("RowBinaryWithNamesAndTypes"),
+            )
+            .await
+            .unwrap();
+
+        let request = fake.last();
+        assert_eq!(request.param("param_a"), Some("x y&z"));
+        assert_eq!(
+            request.param("default_format"),
+            Some("RowBinaryWithNamesAndTypes")
+        );
+        assert_eq!(request.sql(), "SELECT {a:String}");
+    }
+
+    #[tokio::test]
+    async fn an_insert_sends_the_statement_in_the_url_and_the_rows_in_the_body() {
+        let fake = Fake::always(Response::empty());
+
+        fake.client()
+            .insert_bytes("INSERT INTO t (a) FORMAT RowBinary", vec![1, 2, 3])
+            .await
+            .unwrap();
+
+        let request = fake.last();
+        assert_eq!(
+            request.param("query"),
+            Some("INSERT INTO t (a) FORMAT RowBinary")
+        );
+        assert_eq!(request.body, [1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn a_server_exception_keeps_its_status_code_and_message() {
+        let fake = Fake::always(Response::exception(60, "Table analytics.t does not exist"));
+
+        let err = fake.client().execute("SELECT * FROM t").await.unwrap_err();
+
+        match err {
+            Error::ClickHouse {
+                status,
+                code,
+                message,
+            } => {
+                assert_eq!(status, 500);
+                assert_eq!(code, Some(60));
+                assert!(message.contains("does not exist"), "{message}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    /// With `wait_end_of_query` off, or behind some proxies, ClickHouse can
+    /// send a 200 and still report an exception in the header.
+    #[tokio::test]
+    async fn an_exception_header_on_a_200_is_still_an_error() {
+        let fake = Fake::always(Response {
+            status: 200,
+            code: Some(241),
+            body: b"Memory limit exceeded".to_vec(),
+        });
+
+        let err = fake.client().execute("SELECT 1").await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                Error::ClickHouse {
+                    status: 200,
+                    code: Some(241),
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_error_status_without_a_code_header_is_an_error_with_no_code() {
+        let fake = Fake::always(Response {
+            status: 502,
+            code: None,
+            body: b"bad gateway".to_vec(),
+        });
+
+        let err = fake.client().execute("SELECT 1").await.unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                Error::ClickHouse {
+                    status: 502,
+                    code: None,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_is_a_transport_error() {
+        // Bound and dropped, so nothing listens on the port.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let client = Client::from_url(&format!("http://127.0.0.1:{port}")).unwrap();
+
+        let err = client.execute("SELECT 1").await.unwrap_err();
+
+        assert!(matches!(err, Error::Transport(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_text_query_refuses_a_body_that_is_not_utf8() {
+        let fake = Fake::always(Response::ok(vec![0xff, 0xfe]));
+
+        let err = fake.client().query("SELECT 1").await.unwrap_err();
+
+        assert!(matches!(err, Error::Decode(_)), "{err}");
+    }
+
+    #[test]
+    fn credentials_that_cannot_be_a_header_are_refused() {
+        assert!(header("line\nbreak").is_err());
+        assert!(header("plain").is_ok());
     }
 }

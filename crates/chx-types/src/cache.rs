@@ -25,12 +25,15 @@ pub const DIR: &str = ".chx";
 pub struct QueryData {
     /// Always `ClickHouse`. Present so a file is recognisable on its own.
     pub db_name: String,
+    /// The SQL exactly as written in the macro, whitespace included.
     pub query: String,
+    /// What the query takes and returns.
     pub describe: Describe,
     /// SHA-256 of `query`, lowercase hex.
     pub hash: String,
 }
 
+/// The parameters and columns of one query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Describe {
     /// From the query text, in order of first appearance.
@@ -44,18 +47,28 @@ pub struct Describe {
 /// in the canonical form the type model prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
+    /// The parameter or column name.
     pub name: String,
+    /// The ClickHouse type, as text. Stored under the JSON key `type`.
     #[serde(rename = "type")]
     pub ty: String,
 }
 
+/// A cache file that could not be used.
 #[derive(Debug)]
 pub enum LoadError {
+    /// The file or directory could not be read.
     Io(io::Error),
+    /// The file is not the JSON this module writes.
     Json(serde_json::Error),
     /// The file's `hash` is not the hash of its `query`: it was edited by
     /// hand, or written by something else.
-    Hash { path: PathBuf, expected: String },
+    Hash {
+        /// The file that failed the check.
+        path: PathBuf,
+        /// The hash its `query` really has.
+        expected: String,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -81,6 +94,14 @@ impl From<io::Error> for LoadError {
 }
 
 /// Lowercase hex SHA-256 of the query text, exactly as written in the macro.
+///
+/// ```
+/// // printf 'SELECT 1' | sha256sum
+/// assert_eq!(
+///     chx_types::cache::hash("SELECT 1"),
+///     "e004ebd5b5532a4b85984a62f8ad48a81aa3460c1ca07701f386135d72cdecf5"
+/// );
+/// ```
 pub fn hash(query: &str) -> String {
     let digest = Sha256::digest(query.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -92,6 +113,20 @@ pub fn file_name(hash: &str) -> String {
 }
 
 impl QueryData {
+    /// Cache data for `query`, with its hash computed.
+    ///
+    /// ```
+    /// use chx_types::cache::{Describe, Field, QueryData};
+    ///
+    /// let data = QueryData::new(
+    ///     "SELECT 1 AS one",
+    ///     Describe {
+    ///         parameters: vec![],
+    ///         columns: vec![Field { name: "one".into(), ty: "UInt8".into() }],
+    ///     },
+    /// );
+    /// assert_eq!(data.file_name(), format!("query-{}.json", data.hash));
+    /// ```
     pub fn new(query: &str, describe: Describe) -> Self {
         Self {
             db_name: "ClickHouse".to_string(),
@@ -101,6 +136,7 @@ impl QueryData {
         }
     }
 
+    /// The file this data is stored in: `query-<hash>.json`.
     pub fn file_name(&self) -> String {
         file_name(&self.hash)
     }
@@ -116,6 +152,8 @@ impl QueryData {
         Ok(path)
     }
 
+    /// Reads one cache file, refusing it if its hash does not match its
+    /// query.
     pub fn load(path: &Path) -> Result<Self, LoadError> {
         let text = std::fs::read_to_string(path)?;
         let data: QueryData = serde_json::from_str(&text).map_err(LoadError::Json)?;
@@ -209,7 +247,10 @@ mod tests {
             format!("query-{}.json", data.hash)
         );
         assert_eq!(QueryData::load(&path).unwrap(), data);
-        assert_eq!(QueryData::find(&dir, &data.query).unwrap(), Some(data.clone()));
+        assert_eq!(
+            QueryData::find(&dir, &data.query).unwrap(),
+            Some(data.clone())
+        );
         assert_eq!(QueryData::find(&dir, "SELECT 2").unwrap(), None);
         assert_eq!(list(&dir).unwrap(), vec![data]);
 
@@ -242,5 +283,66 @@ mod tests {
     fn a_missing_directory_is_an_empty_cache() {
         assert!(list(Path::new("/nonexistent/chx")).unwrap().is_empty());
         assert_eq!(find_dir(Path::new("/nonexistent/chx")), None);
+    }
+
+    #[test]
+    fn load_errors_say_what_is_wrong_with_the_file() {
+        let dir = std::env::temp_dir().join(format!("chx-cache-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = QueryData::load(&dir.join("query-none.json")).unwrap_err();
+        assert!(matches!(missing, LoadError::Io(_)), "{missing}");
+        assert!(!missing.to_string().is_empty());
+
+        let not_json = dir.join("query-bad.json");
+        std::fs::write(&not_json, "not json").unwrap();
+        let err = QueryData::load(&not_json).unwrap_err();
+        assert!(matches!(err, LoadError::Json(_)), "{err}");
+        assert!(err.to_string().starts_with("not a chx query file"), "{err}");
+        // One unreadable file fails the whole listing: a cache is all or nothing.
+        assert!(list(&dir).is_err());
+        assert!(std::error::Error::source(&err).is_none());
+
+        let mut edited = sample();
+        edited.hash = "0".repeat(64);
+        let path = edited.save_in(&dir).unwrap();
+        let err = QueryData::load(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("does not hash to its own query"),
+            "{err}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listing_ignores_files_that_are_not_cache_entries() {
+        let dir = std::env::temp_dir().join(format!("chx-cache-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        sample().save_in(&dir).unwrap();
+        std::fs::write(dir.join("README.md"), "not a query").unwrap();
+        std::fs::write(dir.join("query-notes.txt"), "not json").unwrap();
+
+        assert_eq!(list(&dir).unwrap(), vec![sample()]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_cache_directory_is_found_in_the_crate_or_above_it() {
+        let root = std::env::temp_dir().join(format!("chx-cache-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let nested = root.join("crates/app/src");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(root.join(DIR)).unwrap();
+
+        assert_eq!(find_dir(&nested), Some(root.join(DIR)));
+
+        // The crate's own wins over the workspace's.
+        std::fs::create_dir(root.join("crates/app").join(DIR)).unwrap();
+        assert_eq!(find_dir(&nested), Some(root.join("crates/app").join(DIR)));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

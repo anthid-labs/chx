@@ -63,6 +63,16 @@ impl Endpoint {
     ///
     /// The path, when present, is the database. Any query parameters are
     /// passed through as ClickHouse settings.
+    ///
+    /// ```
+    /// use chx_types::endpoint::Endpoint;
+    ///
+    /// let endpoint = Endpoint::parse("http://reader:s3cret@localhost:8123/analytics").unwrap();
+    /// assert_eq!(endpoint.user(), Some("reader"));
+    /// assert_eq!(endpoint.database(), Some("analytics"));
+    /// // The URL that is sent, and logged, carries no credentials.
+    /// assert!(!endpoint.url().as_str().contains("s3cret"));
+    /// ```
     pub fn parse(raw: &str) -> Result<Self, UrlError> {
         let parsed = Url::parse(raw).map_err(|err| UrlError(err.to_string()))?;
 
@@ -130,10 +140,12 @@ impl Endpoint {
         &self.url
     }
 
+    /// The user, percent-decoded, sent as the `X-ClickHouse-User` header.
     pub fn user(&self) -> Option<&str> {
         self.user.as_deref()
     }
 
+    /// The password, percent-decoded, sent as the `X-ClickHouse-Key` header.
     pub fn password(&self) -> Option<&str> {
         self.password.as_deref()
     }
@@ -246,5 +258,36 @@ mod tests {
 
         assert_eq!(databases, ["two"]);
         assert_eq!(endpoint.database(), Some("two"));
+    }
+
+    #[test]
+    fn what_is_not_a_usable_url_is_refused_with_the_reason() {
+        assert!(Endpoint::parse("not a url").is_err());
+        let err = Endpoint::parse("http://user:%ff@localhost/db").unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err}");
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn a_url_without_credentials_has_none() {
+        let endpoint = Endpoint::parse("https://clickhouse.internal:8443/db").unwrap();
+        assert_eq!(endpoint.user(), None);
+        assert_eq!(endpoint.password(), None);
+        assert_eq!(endpoint.url().scheme(), "https");
+        assert_eq!(endpoint.url().port(), Some(8443));
+    }
+
+    #[test]
+    fn every_request_setting_is_on_the_url() {
+        let endpoint = Endpoint::parse("http://localhost:8123").unwrap();
+        for (key, value) in REQUEST_SETTINGS {
+            assert!(
+                endpoint
+                    .url()
+                    .query_pairs()
+                    .any(|(k, v)| k == *key && v == *value),
+                "{key}"
+            );
+        }
     }
 }

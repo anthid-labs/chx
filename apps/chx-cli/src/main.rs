@@ -5,6 +5,7 @@
 //! setup and the exit code around it.
 
 mod cli;
+mod prepare;
 mod telemetry;
 
 use chx::error::{Error, Result};

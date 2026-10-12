@@ -1,0 +1,22 @@
+{
+  "db_name": "ClickHouse",
+  "query": "INSERT INTO probe (id, venue, kind) VALUES ({id:UInt64}, {venue:String}, {kind:Enum8('buy' = 1, 'sell' = 2)})",
+  "describe": {
+    "parameters": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "venue",
+        "type": "String"
+      },
+      {
+        "name": "kind",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      }
+    ],
+    "columns": []
+  },
+  "hash": "201d1e87e455f94f386b4fda45c32b958363dca5e4fed2e43602498766d2f76e"
+}

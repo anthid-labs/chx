@@ -31,3 +31,12 @@ dotenvy = { workspace = true }
 # Blocking, because a proc macro runs inside rustc with no async runtime of
 # its own. One `DESCRIBE` per query, at compile time only.
 reqwest = { workspace = true, features = ["blocking"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# docs.rs builds with every feature, so each item shows up with the feature
+# that gates it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

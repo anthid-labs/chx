@@ -79,9 +79,13 @@ pub enum Placement {
 /// The latest row for one version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
+    /// From the file name.
     pub version: i64,
+    /// From the file name, with underscores as spaces.
     pub description: String,
+    /// Lowercase hex SHA-256 of the file as it was when this row was written.
     pub checksum: String,
+    /// Statements in the file.
     pub statements: u32,
     /// How many statements, counted from the top of the file, have run.
     pub applied: u32,

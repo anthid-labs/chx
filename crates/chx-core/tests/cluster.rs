@@ -26,6 +26,9 @@ fn up() {
     compose_up(&["keeper", "ch-1", "ch-2"]);
 }
 
+/// The property the cluster support exists for. Migrations applied through
+/// ch-1 are recorded in a replicated history, so a run through ch-2 sees them
+/// as applied and does nothing.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn history_written_through_one_node_is_seen_through_the_other() {
@@ -92,6 +95,8 @@ async fn history_written_through_one_node_is_seen_through_the_other() {
     scratch.drop().await;
 }
 
+/// Partial progress is shared too. A migration that failed partway through
+/// ch-1 is resumed through ch-2 at the statement that failed.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn a_migration_that_failed_on_one_node_resumes_on_the_other() {
@@ -185,6 +190,9 @@ async fn a_replicated_database_gets_a_replicated_history_without_a_cluster_setti
     scratch.drop().await;
 }
 
+/// The lock is created `ON CLUSTER`, so it exists on ch-2 the moment it is
+/// taken through ch-1, and a run through ch-2 is held off by it. Released
+/// through ch-2, it is gone from both nodes.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn a_lock_taken_through_one_node_holds_on_the_other() {
@@ -231,6 +239,8 @@ async fn a_lock_taken_through_one_node_holds_on_the_other() {
     scratch.drop().await;
 }
 
+/// Two runs started together through different nodes. Distributed DDL is
+/// applied in one queue order, so exactly one takes the lock.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn concurrent_runs_through_both_nodes_apply_each_migration_once() {
@@ -258,6 +268,8 @@ async fn concurrent_runs_through_both_nodes_apply_each_migration_once() {
     scratch.drop().await;
 }
 
+/// An import is history like any other: recorded through ch-1, it is what a
+/// run through ch-2 sees.
 #[tokio::test]
 #[ignore = "needs Docker: cargo test -p chx-core -- --ignored"]
 async fn an_import_through_one_node_is_seen_through_the_other() {

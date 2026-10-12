@@ -14,81 +14,167 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A ClickHouse data type.
+///
+/// Parse one from the text the server prints, and print it back in the same
+/// canonical form:
+///
+/// ```
+/// use chx_types::Type;
+///
+/// let ty = Type::parse("Array(Nullable(DateTime64(9, 'UTC')))").unwrap();
+/// assert_eq!(ty.to_string(), "Array(Nullable(DateTime64(9, 'UTC')))");
+///
+/// // Aliases normalise to what `DESCRIBE` reports.
+/// assert_eq!(Type::parse("Decimal64(4)").unwrap().to_string(), "Decimal(18, 4)");
+/// ```
+///
+/// Every variant below notes its RowBinary layout, since that is what the
+/// codecs in `chx-core` are written against. All numbers are little-endian.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
+    /// Unsigned 8-bit integer. One byte.
     UInt8,
+    /// Unsigned 16-bit integer. Two bytes.
     UInt16,
+    /// Unsigned 32-bit integer. Four bytes.
     UInt32,
+    /// Unsigned 64-bit integer. Eight bytes.
     UInt64,
+    /// Unsigned 128-bit integer. Sixteen bytes.
     UInt128,
+    /// Unsigned 256-bit integer. Thirty-two bytes. No Rust type reads it;
+    /// cast it in the query.
     UInt256,
+    /// Signed 8-bit integer. One byte.
     Int8,
+    /// Signed 16-bit integer. Two bytes.
     Int16,
+    /// Signed 32-bit integer. Four bytes.
     Int32,
+    /// Signed 64-bit integer. Eight bytes.
     Int64,
+    /// Signed 128-bit integer. Sixteen bytes.
     Int128,
+    /// Signed 256-bit integer. Thirty-two bytes. No Rust type reads it; cast
+    /// it in the query.
     Int256,
+    /// IEEE 754 single precision. Four bytes.
     Float32,
+    /// IEEE 754 double precision. Eight bytes.
     Float64,
+    /// `true` or `false`. One byte, zero or one.
     Bool,
+    /// A byte string of any length: a LEB128 length, then the bytes. Usually
+    /// UTF-8 text, but ClickHouse does not require it.
     String,
+    /// A byte string of exactly this many bytes, zero-padded on the right.
+    /// No length prefix.
     FixedString(usize),
+    /// A calendar date from 1970-01-01. Days since the epoch as a `UInt16`.
     Date,
+    /// A calendar date with a wider range. Days since the epoch as an
+    /// `Int32`, so dates before 1970 are negative.
     Date32,
+    /// An instant with one-second resolution. Seconds since the epoch as a
+    /// `UInt32`.
     DateTime {
+        /// The zone the column is displayed in, as in `DateTime('UTC')`. It
+        /// does not change the stored instant.
         timezone: Option<String>,
     },
+    /// An instant with sub-second resolution. Ticks since the epoch as an
+    /// `Int64`, where a tick is `10^-precision` seconds.
     DateTime64 {
+        /// Decimal digits of the fraction of a second, 0 to 9. Three is
+        /// milliseconds, nine is nanoseconds.
         precision: u8,
+        /// The zone the column is displayed in. It does not change the
+        /// stored instant.
         timezone: Option<String>,
     },
+    /// A fixed-point number: an integer mantissa and a scale.
+    ///
     /// `Decimal32(S)`, `Decimal64(S)`, `Decimal128(S)` and `Decimal256(S)`
     /// normalise to this, with the precision they imply, because that is how
-    /// the server describes them.
+    /// the server describes them. The mantissa is an `Int32` for a precision
+    /// up to 9, an `Int64` up to 18, an `Int128` up to 38 and an `Int256`
+    /// beyond that.
     Decimal {
+        /// Total significant decimal digits, 1 to 76.
         precision: u8,
+        /// Digits after the decimal point, 0 to `precision`.
         scale: u8,
     },
+    /// A UUID. Sixteen bytes as two little-endian `UInt64` halves, most
+    /// significant half first, which is not the RFC 4122 byte order.
     Uuid,
+    /// An IPv4 address. A `UInt32`, so `1.2.3.4` is the bytes `04 03 02 01`.
     IPv4,
+    /// An IPv6 address. Sixteen bytes in network order.
     IPv6,
+    /// An enumeration stored as an `Int8`. Each entry is a name and its
+    /// number, in declaration order.
     Enum8(Vec<(String, i8)>),
+    /// An enumeration stored as an `Int16`. Each entry is a name and its
+    /// number, in declaration order.
     Enum16(Vec<(String, i16)>),
+    /// A value that may be `NULL`: one flag byte, `1` for `NULL`, then the
+    /// inner value only when the flag is `0`.
     Nullable(Box<Type>),
-    /// Serialised exactly as its inner type in RowBinary, so every codec
-    /// looks through it. See [`Type::unwrapped`].
+    /// A dictionary-encoded column. Serialised exactly as its inner type in
+    /// RowBinary, so every codec looks through it. See [`Type::unwrapped`].
     LowCardinality(Box<Type>),
+    /// A list: a LEB128 length, then that many elements.
     Array(Box<Type>),
-    /// On the wire, a `Map(K, V)` is an `Array(Tuple(K, V))`.
+    /// A key-value map, as `Map(key, value)`. On the wire, a `Map(K, V)` is
+    /// an `Array(Tuple(K, V))`: a length, then alternating keys and values.
     Map(Box<Type>, Box<Type>),
+    /// A fixed list of typed elements, written one after another with no
+    /// framing.
     Tuple(Vec<TupleElement>),
-    /// Serialised as its inner type, like `LowCardinality`.
+    /// The state of a simple aggregate such as `sum` or `max`. Serialised as
+    /// its inner type, like `LowCardinality`.
     SimpleAggregateFunction {
+        /// The aggregate's name, such as `sum`.
         function: String,
+        /// The type the value is stored and serialised as.
         inner: Box<Type>,
     },
-    /// The type of `NULL` on its own, as in `Nullable(Nothing)`.
+    /// The type of `NULL` on its own, as in `Nullable(Nothing)`. Zero bytes.
     Nothing,
     /// Only valid in a query parameter, `{table:Identifier}`. It has no
     /// serialisation, and no `DESCRIBE` can check a query that uses one.
     Identifier,
-    /// A type this model does not cover, kept as the server printed it.
+    /// A type this model does not cover, such as `JSON` or `Dynamic`, kept
+    /// as the server printed it. Every codec refuses it.
     Other(String),
 }
 
 /// One element of a `Tuple`, named or positional.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TupleElement {
+    /// The element's name in a named tuple, `Tuple(a UInt8, b String)`.
+    /// `None` for a positional one.
     pub name: Option<String>,
+    /// The element's type.
     pub ty: Type,
 }
 
 /// A type string that could not be parsed.
+///
+/// ```
+/// use chx_types::Type;
+///
+/// let err = Type::parse("Array(UInt8").unwrap_err();
+/// assert_eq!(err.position, 11);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
+    /// The whole text that was being parsed.
     pub text: String,
-    /// Byte offset into `text`.
+    /// Byte offset into `text` where parsing stopped.
     pub position: usize,
+    /// What was expected or wrong at that position.
     pub message: String,
 }
 
@@ -119,6 +205,13 @@ impl Type {
 
     /// The type as it is serialised: `LowCardinality(T)` and
     /// `SimpleAggregateFunction(f, T)` are both written as `T`.
+    ///
+    /// ```
+    /// use chx_types::Type;
+    ///
+    /// let ty = Type::parse("LowCardinality(Nullable(String))").unwrap();
+    /// assert_eq!(ty.unwrapped().to_string(), "Nullable(String)");
+    /// ```
     pub fn unwrapped(&self) -> &Type {
         match self {
             Type::LowCardinality(inner) | Type::SimpleAggregateFunction { inner, .. } => {
@@ -136,6 +229,14 @@ impl Type {
     /// A value of this type in the text form a query parameter takes, for a
     /// `DESCRIBE` that only needs the parameters to be set. `None` for a type
     /// that has no literal, such as `Identifier`.
+    ///
+    /// ```
+    /// use chx_types::Type;
+    ///
+    /// assert_eq!(Type::UInt64.placeholder().as_deref(), Some("0"));
+    /// assert_eq!(Type::parse("Array(String)").unwrap().placeholder().as_deref(), Some("[]"));
+    /// assert_eq!(Type::Identifier.placeholder(), None);
+    /// ```
     pub fn placeholder(&self) -> Option<String> {
         self.placeholder_literal(false)
     }
@@ -248,12 +349,18 @@ impl fmt::Display for Type {
             Type::IPv6 => f.write_str("IPv6"),
             Type::Enum8(variants) => {
                 f.write_str("Enum8(")?;
-                write_variants(f, variants.iter().map(|(name, value)| (name, *value as i64)))?;
+                write_variants(
+                    f,
+                    variants.iter().map(|(name, value)| (name, *value as i64)),
+                )?;
                 f.write_str(")")
             }
             Type::Enum16(variants) => {
                 f.write_str("Enum16(")?;
-                write_variants(f, variants.iter().map(|(name, value)| (name, *value as i64)))?;
+                write_variants(
+                    f,
+                    variants.iter().map(|(name, value)| (name, *value as i64)),
+                )?;
                 f.write_str(")")
             }
             Type::Nullable(inner) => write!(f, "Nullable({inner})"),
@@ -830,7 +937,10 @@ mod tests {
             Type::parse("Array(Variant(UInt8, String))").unwrap(),
             Type::Array(Box::new(Type::Other("Variant(UInt8, String)".to_string())))
         );
-        assert_eq!(Type::parse("Dynamic").unwrap(), Type::Other("Dynamic".to_string()));
+        assert_eq!(
+            Type::parse("Dynamic").unwrap(),
+            Type::Other("Dynamic".to_string())
+        );
     }
 
     #[test]
@@ -847,7 +957,11 @@ mod tests {
         let ty = Type::parse("LowCardinality(Nullable(String))").unwrap();
         assert_eq!(ty.unwrapped(), &Type::Nullable(Box::new(Type::String)));
         assert!(ty.is_nullable());
-        assert!(!Type::parse("Array(Nullable(String))").unwrap().is_nullable());
+        assert!(
+            !Type::parse("Array(Nullable(String))")
+                .unwrap()
+                .is_nullable()
+        );
     }
 
     #[test]
@@ -865,5 +979,154 @@ mod tests {
         assert_eq!(placeholder("LowCardinality(String)").as_deref(), Some(""));
         assert_eq!(placeholder("Identifier"), None);
         assert_eq!(placeholder("Dynamic"), None);
+    }
+
+    #[test]
+    fn every_remaining_scalar_roundtrips() {
+        for text in [
+            "UInt16",
+            "UInt32",
+            "UInt64",
+            "UInt128",
+            "Int8",
+            "Int16",
+            "Int32",
+            "Int64",
+            "Int256",
+            "Float32",
+            "FixedString(16)",
+            "Identifier",
+            "DateTime64(0)",
+            "Decimal(76, 38)",
+            "Enum16('a' = -32768, 'b' = 32767)",
+            "Nullable(Nothing)",
+            "Tuple(a Tuple(b UInt8, c String), d Array(Tuple(UInt8, UInt8)))",
+            "LowCardinality(Nullable(FixedString(2)))",
+        ] {
+            roundtrip(text);
+        }
+    }
+
+    #[test]
+    fn whitespace_between_tokens_is_ignored() {
+        assert_eq!(
+            Type::parse("  Map ( String ,Array( UInt8 ) )  ")
+                .unwrap()
+                .to_string(),
+            "Map(String, Array(UInt8))"
+        );
+        assert_eq!(
+            Type::parse("DateTime()").unwrap(),
+            Type::DateTime { timezone: None }
+        );
+        assert_eq!("UInt8".parse::<Type>().unwrap(), Type::UInt8);
+    }
+
+    #[test]
+    fn decimal_aliases_carry_their_precision() {
+        for (alias, precision) in [
+            ("Decimal32(2)", 9),
+            ("Decimal128(2)", 38),
+            ("Decimal256(2)", 76),
+        ] {
+            assert_eq!(
+                Type::parse(alias).unwrap(),
+                Type::Decimal {
+                    precision,
+                    scale: 2
+                },
+                "{alias}"
+            );
+        }
+        assert!(Type::parse("Decimal32(10)").is_err());
+        assert!(Type::parse("Decimal(77, 0)").is_err());
+    }
+
+    #[test]
+    fn each_malformed_shape_has_its_own_message() {
+        let message = |text: &str| Type::parse(text).unwrap_err().message;
+        assert_eq!(
+            message("FixedString(0)"),
+            "FixedString length must be positive"
+        );
+        assert_eq!(message("FixedString(x)"), "expected an integer");
+        assert_eq!(message("DateTime64(3, UTC)"), "expected '\\''");
+        assert_eq!(message("DateTime('UTC"), "unterminated string");
+        assert_eq!(message("DateTime('UTC\\"), "unterminated string");
+        assert_eq!(
+            message("Enum16('a' = 70000)"),
+            "Enum16 value does not fit in 16 bits"
+        );
+        assert_eq!(
+            message("Enum('a' = 70000)"),
+            "Enum16 value does not fit in 16 bits"
+        );
+        assert_eq!(message("Map(String)"), "expected ','");
+        assert_eq!(message("Tuple(`open UInt8)"), "unterminated quoted name");
+        assert_eq!(message("Nested(a UInt8"), "unbalanced parentheses");
+        assert_eq!(message("(UInt8)"), "expected a type name");
+        assert_eq!(message("Bool(1)"), "Bool takes no arguments");
+    }
+
+    #[test]
+    fn escapes_in_type_strings_are_decoded() {
+        assert_eq!(
+            Type::parse(r"Enum8('a\tb\n\r\0' = 1)").unwrap(),
+            Type::Enum8(vec![("a\tb\n\r\0".to_string(), 1)])
+        );
+        assert_eq!(
+            Type::Enum8(vec![(r"back\slash".to_string(), 1)]).to_string(),
+            r"Enum8('back\\slash' = 1)"
+        );
+    }
+
+    #[test]
+    fn unknown_types_keep_strings_with_parentheses_in_them() {
+        assert_eq!(
+            Type::parse("Custom('a)b', Inner(1))").unwrap(),
+            Type::Other("Custom('a)b', Inner(1))".to_string())
+        );
+    }
+
+    #[test]
+    fn a_parse_error_prints_the_text_the_place_and_the_reason() {
+        let err = Type::parse("Array(UInt8").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot parse type \"Array(UInt8\" at byte 11: expected ')'"
+        );
+        assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn every_type_with_a_literal_has_a_placeholder() {
+        let placeholder = |text: &str| Type::parse(text).unwrap().placeholder();
+        for (text, expected) in [
+            ("Int8", "0"),
+            ("Float64", "0"),
+            ("Decimal(18, 4)", "0"),
+            ("Bool", "false"),
+            ("FixedString(4)", ""),
+            ("Date", "1970-01-01"),
+            ("Date32", "1970-01-01"),
+            ("DateTime", "1970-01-01 00:00:00"),
+            ("DateTime64(3, 'UTC')", "1970-01-01 00:00:00"),
+            ("UUID", "00000000-0000-0000-0000-000000000000"),
+            ("IPv4", "0.0.0.0"),
+            ("IPv6", "::"),
+            ("Enum16('x' = 300)", "x"),
+            ("Map(String, UInt8)", "{}"),
+            ("SimpleAggregateFunction(sum, UInt64)", "0"),
+            (
+                "Tuple(String, Date, UUID, IPv4, Array(UInt8))",
+                "('', '1970-01-01', '00000000-0000-0000-0000-000000000000', '0.0.0.0', [])",
+            ),
+        ] {
+            assert_eq!(placeholder(text).as_deref(), Some(expected), "{text}");
+        }
+        assert_eq!(placeholder("Nothing"), None);
+        assert_eq!(placeholder("Tuple(UInt8, JSON)"), None);
+        assert_eq!(Type::Enum8(vec![]).placeholder(), None);
+        assert_eq!(Type::Enum16(vec![]).placeholder(), None);
     }
 }

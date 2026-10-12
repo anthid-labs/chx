@@ -21,7 +21,11 @@
 //! waits, then fails naming the holder, and [`unlock`] clears it once someone
 //! has checked that run is gone.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// The runtime's clock rather than the system's, so the wait and the sleep
+// inside it agree, and a test can pause both.
+use tokio::time::Instant;
 
 use crate::client::Client;
 use crate::error::{Error, Result};
@@ -107,6 +111,7 @@ pub async fn acquire<'a>(
 }
 
 impl Lock<'_> {
+    /// Drops the lock table, letting the next run in.
     pub async fn release(self) -> Result<()> {
         drop_lock(self.client, &self.on_cluster).await
     }

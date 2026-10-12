@@ -12,18 +12,30 @@ use crate::types::{ParseError, Type};
 /// One parameter the query declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
+    /// The name between the brace and the colon. Values are sent to the
+    /// server as `param_<name>`.
     pub name: String,
+    /// The type after the colon, which the server parses the value as.
     pub ty: Type,
 }
 
+/// A query whose parameters cannot be used as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamError {
     /// A `{name:...}` whose type does not parse.
-    Type { name: String, source: ParseError },
+    Type {
+        /// The parameter's name.
+        name: String,
+        /// Why its type did not parse.
+        source: ParseError,
+    },
     /// The same name declared twice with different types.
     Conflict {
+        /// The parameter's name.
         name: String,
+        /// The type at its first appearance.
         first: Type,
+        /// The different type at a later one.
         second: Type,
     },
 }
@@ -54,6 +66,17 @@ impl std::error::Error for ParamError {}
 /// A brace that is not followed by `name:` is not a parameter; ClickHouse has
 /// map literals such as `{'k': 1}`, and they are left alone. A name declared
 /// twice with the same type is one parameter.
+///
+/// ```
+/// let params = chx_types::params::parse(
+///     "SELECT * FROM t WHERE venue = {venue:String} AND ts > {since:DateTime64(9)} -- {not:UInt8}",
+/// )
+/// .unwrap();
+///
+/// let names: Vec<_> = params.iter().map(|p| p.name.as_str()).collect();
+/// assert_eq!(names, ["venue", "since"]);
+/// assert_eq!(params[1].ty.to_string(), "DateTime64(9)");
+/// ```
 pub fn parse(sql: &str) -> Result<Vec<Param>, ParamError> {
     let bytes = sql.as_bytes();
     let mut params: Vec<Param> = Vec::new();
@@ -252,5 +275,46 @@ mod tests {
     #[test]
     fn identifier_parameters_parse() {
         assert_eq!(names("SELECT id FROM {t:Identifier}"), ["t:Identifier"]);
+    }
+
+    #[test]
+    fn errors_print_the_parameter_they_are_about() {
+        let conflict = parse("SELECT {n:UInt64}, {n:String}").unwrap_err();
+        assert_eq!(
+            conflict.to_string(),
+            "parameter n is declared as both UInt64 and String"
+        );
+        let bad = parse("SELECT {n:Array()}").unwrap_err();
+        assert!(
+            bad.to_string()
+                .starts_with("parameter {n:...}: cannot parse type"),
+            "{bad}"
+        );
+    }
+
+    #[test]
+    fn braces_that_only_look_like_parameters_are_left_alone() {
+        // No colon, an empty type, a nested brace, unbalanced parentheses, or
+        // never closed: none of these is a parameter, and none is an error.
+        for sql in [
+            "SELECT {name}",
+            "SELECT {name:}",
+            "SELECT {name: {inner}}",
+            "SELECT {name:Array)}",
+            "SELECT {name:String",
+            "SELECT {1:String}",
+            "SELECT {",
+        ] {
+            assert!(names(sql).is_empty(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn unterminated_quotes_and_comments_end_the_scan_quietly() {
+        assert!(names("SELECT 'never closed {a:UInt8}").is_empty());
+        assert!(names("SELECT 1 /* never closed {a:UInt8}").is_empty());
+        assert!(names("SELECT 1 -- trailing {a:UInt8}").is_empty());
+        assert_eq!(names("SELECT 'it''s', 'a\\'b', {a:UInt8}"), ["a:UInt8"]);
+        assert_eq!(names("SELECT {e:Enum8('}' = 1)}"), ["e:Enum8('}' = 1)"]);
     }
 }

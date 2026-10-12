@@ -1,0 +1,18 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT * FROM probe_drift",
+  "describe": {
+    "parameters": [],
+    "columns": [
+      {
+        "name": "a",
+        "type": "UInt8"
+      },
+      {
+        "name": "b",
+        "type": "UInt8"
+      }
+    ]
+  },
+  "hash": "ad4578b59fbcef1f614912f0441a0bba70000223b8d4655de568688c59880326"
+}

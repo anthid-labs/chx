@@ -27,14 +27,30 @@ pub struct Decimal {
 }
 
 impl Decimal {
+    /// `mantissa / 10^scale`. `Decimal::new(15, 1)` is 1.5.
+    ///
+    /// ```
+    /// use chx::types::Decimal;
+    ///
+    /// let price = Decimal::new(123_4500, 4);
+    /// assert_eq!(price.to_string(), "123.4500");
+    /// assert_eq!("123.4500".parse::<Decimal>().unwrap(), price);
+    ///
+    /// // The same number at the scale of a Decimal(38, 18) column.
+    /// assert_eq!(price.rescale(18).unwrap().scale(), 18);
+    /// // Dropping digits is refused rather than rounded.
+    /// assert!(Decimal::new(15001, 4).rescale(1).is_err());
+    /// ```
     pub const fn new(mantissa: i128, scale: u8) -> Self {
         Self { mantissa, scale }
     }
 
+    /// The integer the value is stored as.
     pub const fn mantissa(&self) -> i128 {
         self.mantissa
     }
 
+    /// Digits after the decimal point.
     pub const fn scale(&self) -> u8 {
         self.scale
     }
@@ -99,17 +115,29 @@ impl FromStr for Decimal {
         if whole.is_empty() && fraction.is_empty() {
             return Err(invalid());
         }
-        if !whole.chars().all(|c| c.is_ascii_digit()) || !fraction.chars().all(|c| c.is_ascii_digit())
+        if !whole.chars().all(|c| c.is_ascii_digit())
+            || !fraction.chars().all(|c| c.is_ascii_digit())
         {
             return Err(invalid());
         }
         let scale = u8::try_from(fraction.len()).map_err(|_| invalid())?;
-        let mantissa: i128 = format!("{whole}{fraction}").parse().map_err(|_| invalid())?;
+        let mantissa: i128 = format!("{whole}{fraction}")
+            .parse()
+            .map_err(|_| invalid())?;
         Ok(Self::new(sign * mantissa, scale))
     }
 }
 
 /// A `String` or `FixedString` column read as raw bytes.
+///
+/// ```
+/// use chx::types::Bytes;
+///
+/// let digest = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]);
+/// assert_eq!(digest.0.len(), 4);
+/// let raw: Vec<u8> = digest.into();
+/// assert_eq!(raw, [0xde, 0xad, 0xbe, 0xef]);
+/// ```
 ///
 /// ClickHouse strings are byte strings. `String` decodes the common case,
 /// text, and refuses anything else; this is for columns that hold binary
@@ -143,7 +171,13 @@ mod tests {
 
     #[test]
     fn decimal_parses_what_it_prints() {
-        for text in ["1.5000", "-0.05", "42", "0.000", "123456789012345678901234567890.123456"] {
+        for text in [
+            "1.5000",
+            "-0.05",
+            "42",
+            "0.000",
+            "123456789012345678901234567890.123456",
+        ] {
             assert_eq!(text.parse::<Decimal>().unwrap().to_string(), text);
         }
         assert_eq!("+1.5".parse::<Decimal>().unwrap(), Decimal::new(15, 1));
@@ -160,5 +194,27 @@ mod tests {
         let err = Decimal::new(15001, 4).rescale(1).unwrap_err();
         assert!(err.to_string().contains("lose digits"), "{err}");
         assert!(Decimal::new(i128::MAX, 0).rescale(1).is_err());
+    }
+
+    #[test]
+    fn a_decimal_exposes_its_parts_and_refuses_an_absurd_scale() {
+        let value = Decimal::new(-15, 1);
+        assert_eq!((value.mantissa(), value.scale()), (-15, 1));
+        assert_eq!(value.rescale(1).unwrap(), value);
+        // 10^39 does not fit in an i128.
+        assert!(value.rescale(40).is_err());
+        assert!(Decimal::new(1, 40).rescale(0).is_err());
+        assert!("1e5".parse::<Decimal>().is_err());
+        assert!("-".parse::<Decimal>().is_err());
+        assert_eq!(".5".parse::<Decimal>().unwrap(), Decimal::new(5, 1));
+        assert_eq!("5.".parse::<Decimal>().unwrap(), Decimal::new(5, 0));
+    }
+
+    #[test]
+    fn bytes_convert_to_and_from_a_vector() {
+        let bytes = Bytes::from(vec![1, 2]);
+        assert_eq!(bytes, Bytes(vec![1, 2]));
+        assert_eq!(Vec::<u8>::from(bytes), [1, 2]);
+        assert_eq!(Bytes::default(), Bytes(vec![]));
     }
 }

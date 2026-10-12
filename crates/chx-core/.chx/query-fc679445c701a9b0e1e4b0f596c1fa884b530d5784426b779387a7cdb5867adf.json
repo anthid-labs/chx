@@ -1,0 +1,23 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT kind AS \"kind: i8\", px AS \"px: chx::types::Decimal\" FROM probe WHERE id = {id:UInt64}",
+  "describe": {
+    "parameters": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      }
+    ],
+    "columns": [
+      {
+        "name": "kind: i8",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      },
+      {
+        "name": "px: chx::types::Decimal",
+        "type": "Decimal(38, 18)"
+      }
+    ]
+  },
+  "hash": "fc679445c701a9b0e1e4b0f596c1fa884b530d5784426b779387a7cdb5867adf"
+}

@@ -5,3 +5,10 @@ git-fetch-with-cli = true
 # [target.x86_64-unknown-linux-gnu]
 # linker = "clang"
 # rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# The query macros in this repository compile against the checked-in `.chx`
+# cache and never a database, whatever `CLICKHOUSE_URL` or `.env` a
+# contributor happens to have. `chx prepare` sets this to false for the one
+# build that is meant to connect.
+[env]
+CHX_OFFLINE = "true"

@@ -6,6 +6,8 @@
 //! the [connection URL](endpoint) and the [offline cache](cache). Nothing in
 //! this crate talks to a server.
 
+#![warn(missing_docs)]
+
 pub mod cache;
 pub mod endpoint;
 pub mod params;

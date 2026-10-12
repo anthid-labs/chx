@@ -1,0 +1,43 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT id, venue, px, ts, tags, note, kind FROM probe WHERE venue = {venue:String} ORDER BY id",
+  "describe": {
+    "parameters": [
+      {
+        "name": "venue",
+        "type": "String"
+      }
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "venue",
+        "type": "LowCardinality(String)"
+      },
+      {
+        "name": "px",
+        "type": "Decimal(38, 18)"
+      },
+      {
+        "name": "ts",
+        "type": "DateTime64(9, 'UTC')"
+      },
+      {
+        "name": "tags",
+        "type": "Array(String)"
+      },
+      {
+        "name": "note",
+        "type": "Nullable(String)"
+      },
+      {
+        "name": "kind",
+        "type": "Enum8('buy' = 1, 'sell' = 2)"
+      }
+    ]
+  },
+  "hash": "9805c38deaadc9b6333e843d35d52491a4ce903b1dd703f58bc9a64a74fea374"
+}

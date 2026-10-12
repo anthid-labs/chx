@@ -43,6 +43,8 @@
 //! must stay as they are, since they are not run again. Editing one of them
 //! changes nothing in the database, and chx cannot tell.
 
+#[cfg(test)]
+mod hermetic;
 pub mod history;
 pub mod lock;
 pub mod source;
@@ -74,34 +76,61 @@ pub struct Migrator {
 /// One migration this run brought to completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
+    /// From the file name.
     pub version: i64,
+    /// From the file name, with underscores as spaces.
     pub description: String,
     /// Statements in the file.
     pub statements: usize,
     /// Statements skipped because an earlier, failed run had already applied
     /// them. Zero for a migration that ran from the top.
     pub resumed_at: usize,
+    /// Time this run spent on the migration.
     pub elapsed: Duration,
 }
 
 /// One migration [`Migrator::import`] recorded as applied without running it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Imported {
+    /// From the file name.
     pub version: i64,
+    /// From the file name, with underscores as spaces.
     pub description: String,
+    /// Statements in the file, all recorded as applied.
     pub statements: usize,
 }
 
 /// One migration the run will execute, and where in it to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step<'a> {
+    /// The file to run.
     pub migration: &'a Migration,
+    /// The file cut into statements, all of them, including those to skip.
     pub statements: Vec<String>,
     /// Statements to skip, because they already ran.
     pub resume_at: usize,
 }
 
 impl Migrator {
+    /// Reads every `<version>_<description>.sql` in `dir`. Nothing connects:
+    /// a malformed directory is reported here.
+    ///
+    /// ```no_run
+    /// # async fn example() -> chx::Result<()> {
+    /// use std::time::Duration;
+    ///
+    /// use chx::Client;
+    /// use chx::migrate::Migrator;
+    ///
+    /// let client = Client::from_url("http://default:@localhost:8123/analytics")?;
+    /// let applied = Migrator::from_dir("migrations")?
+    ///     .lock_timeout(Duration::from_secs(60))
+    ///     .run(&client, |done| println!("applied {}", done.version))
+    ///     .await?;
+    /// println!("{} migrations applied", applied.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             migrations: source::read_dir(dir.as_ref())?,
@@ -128,6 +157,7 @@ impl Migrator {
         self
     }
 
+    /// The migrations that were read, sorted by version.
     pub fn migrations(&self) -> &[Migration] {
         &self.migrations
     }

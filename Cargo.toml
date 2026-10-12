@@ -44,7 +44,9 @@ opt-level = 0
 # builds on that, and `chx-core` builds on both.
 chx-types = { path = "crates/chx-types", version = "0.3.0" }
 chx-macros = { path = "crates/chx-macros", version = "0.3.0" }
-chx-core = { path = "crates/chx-core", version = "0.3.0" }
+# No default features here, so the command pulls in only the migration engine;
+# a user of the library gets them all unless they say otherwise.
+chx-core = { path = "crates/chx-core", version = "0.3.0", default-features = false }
 
 # Async runtime
 # Features are chosen per crate: the library needs only a timer, and a runtime
@@ -90,7 +92,7 @@ dotenvy = "0.15"
 thiserror = "2"
 
 # Time
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # Telemetry
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }

@@ -41,6 +41,14 @@ uuid = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The live tests need a runtime, and join two runs to race them for the lock.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `test-util` pauses the clock, so a run that waits on the lock is tested
+# without waiting.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+
+# docs.rs builds with every feature, so each item shows up with the feature
+# that gates it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

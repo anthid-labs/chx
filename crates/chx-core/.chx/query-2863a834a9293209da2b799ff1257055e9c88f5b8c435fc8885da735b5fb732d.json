@@ -1,0 +1,19 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT count() FROM probe WHERE id > {min:UInt64}",
+  "describe": {
+    "parameters": [
+      {
+        "name": "min",
+        "type": "UInt64"
+      }
+    ],
+    "columns": [
+      {
+        "name": "count()",
+        "type": "UInt64"
+      }
+    ]
+  },
+  "hash": "2863a834a9293209da2b799ff1257055e9c88f5b8c435fc8885da735b5fb732d"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "ClickHouse",
+  "query": "-- Read by query_file! in tests/macros.rs.\nSELECT id, note\nFROM probe\nWHERE venue = {venue:String}\nORDER BY id\n",
+  "describe": {
+    "parameters": [
+      {
+        "name": "venue",
+        "type": "String"
+      }
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "note",
+        "type": "Nullable(String)"
+      }
+    ]
+  },
+  "hash": "ce5985188d369a040196a7fb37152a9724e3288e11d5fbced0670a61759207f1"
+}

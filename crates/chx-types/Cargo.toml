@@ -18,3 +18,9 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
 percent-encoding = { workspace = true }
+
+# docs.rs builds with every feature, so each item shows up with the feature
+# that gates it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
