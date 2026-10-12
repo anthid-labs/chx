@@ -12,6 +12,11 @@
 //! `cargo test` that is running it. The first run compiles the dependency
 //! tree there and takes a minute or two; later runs take seconds.
 //!
+//! The tests share that directory and run in parallel, on purpose. Each
+//! `prepare` has to get its own answer from a directory another build is
+//! using at the same time, with a different database behind it, and that is
+//! the property a shared directory tests.
+//!
 //! `tests/prepare_offline.rs` covers the orchestration around this, on a
 //! throwaway crate, with no server.
 //!
@@ -28,6 +33,10 @@ use std::path::Path;
 use std::process::Command;
 
 use common::{SINGLE, Scratch, compose_up};
+
+/// Checked queries in `chx-core`: those in `tests/macros.rs` and in
+/// `examples/checked.rs`. One entry each in `crates/chx-core/.chx`.
+const QUERIES: usize = 13;
 
 fn core_dir() -> &'static Path {
     Path::new(concat!(
@@ -71,7 +80,10 @@ async fn the_checked_in_cache_matches_the_fixture_schema() {
         output.status.success(),
         "prepare --check failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(stdout.contains("is up to date (8 queries)"), "{stdout}");
+    assert!(
+        stdout.contains(&format!("is up to date ({QUERIES} queries)")),
+        "{stdout}"
+    );
 
     scratch.drop().await;
 }
@@ -114,7 +126,64 @@ async fn a_schema_the_queries_do_not_fit_fails_the_check() {
     // Nothing was written: --check only reads.
     assert_eq!(
         std::fs::read_dir(core_dir().join(".chx")).unwrap().count(),
-        8
+        QUERIES
+    );
+
+    scratch.drop().await;
+}
+
+/// The failure this suite first found in CI. `prepare` can only learn a
+/// query from a macro that runs, and a macro only runs when its crate
+/// compiles. Here the crate is built first, in the same target directory and
+/// with no database, so cargo has every reason to call it fresh.
+///
+/// `prepare --check` must recompile it anyway and find every query.
+/// When it trusted the fresh artifacts it found none, reported every cache
+/// entry as unused, and a plain `prepare` in that state would have deleted
+/// them. Any second build in the directory sets this up: an editor's
+/// background check, or the other test in this file running alongside.
+#[tokio::test]
+#[ignore = "needs Docker: cargo test -p chx-cli -- --ignored"]
+async fn prepare_sees_every_query_in_a_crate_that_is_already_built() {
+    compose_up(&["single"]);
+    let scratch = Scratch::new(SINGLE, "prepare_fresh").await;
+    for file in ["probe.sql", "probe_drift.sql"] {
+        let sql = std::fs::read_to_string(core_dir().join("tests/fixture").join(file)).unwrap();
+        scratch.client().execute(&sql).await.unwrap();
+    }
+    let url = format!("{SINGLE}/{}", scratch.name);
+    let target = core_dir().join("../../target/prepare-test");
+
+    let built = Command::new(env!("CARGO"))
+        .args(["check", "--all-targets"])
+        .current_dir(core_dir())
+        .env("CARGO_TARGET_DIR", &target)
+        .env_remove("CLICKHOUSE_URL")
+        .env_remove("CHX_TMP")
+        .output()
+        .expect("run cargo");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_chx"))
+        .args(["prepare", "--check"])
+        .current_dir(core_dir())
+        .env("CLICKHOUSE_URL", &url)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .expect("run chx");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "prepare --check failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("is up to date ({QUERIES} queries)")),
+        "{stdout}"
     );
 
     scratch.drop().await;

@@ -146,8 +146,20 @@ fn generate(
         Mode::Unchecked => unreachable!(),
     };
 
+    // `option_env!` is expanded by rustc in the caller's crate, which records
+    // the variable in that crate's dependency info, and cargo rebuilds the
+    // crate when it changes. That is what makes `chx prepare` sound: it runs
+    // the build with a fresh `CHX_TMP`, so every crate holding a checked
+    // query is recompiled and its macros run, however fresh cargo thought it
+    // was and whoever built it last. `CLICKHOUSE_URL` is deliberately not
+    // tracked this way: its value would be written, password and all, into
+    // the target directory.
     Ok(quote! {{
         #tracked
+        const _: (::core::option::Option<&str>, ::core::option::Option<&str>) = (
+            ::core::option_env!("CHX_TMP"),
+            ::core::option_env!("CHX_OFFLINE"),
+        );
         #body
     }})
 }
@@ -558,5 +570,24 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// The mechanism `chx prepare` relies on to make the macros run again.
+    #[test]
+    fn a_checked_query_ties_its_crate_to_the_prepare_variables() {
+        for (tokens, mode) in [
+            (quote!("SELECT 1 AS x"), Mode::Record),
+            (quote!("SELECT 1 AS x"), Mode::Scalar),
+            (quote!(T, "SELECT 1 AS x"), Mode::As),
+        ] {
+            let code = expand_with(tokens, mode, vec![column("x", "UInt8")]).unwrap();
+            assert!(code.contains("::core::option_env!(\"CHX_TMP\")"), "{code}");
+            assert!(
+                code.contains("::core::option_env!(\"CHX_OFFLINE\")"),
+                "{code}"
+            );
+            // The URL carries a password and must never reach the target directory.
+            assert!(!code.contains("CLICKHOUSE_URL"), "{code}");
+        }
     }
 }

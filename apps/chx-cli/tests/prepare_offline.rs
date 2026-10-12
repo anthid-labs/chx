@@ -1,8 +1,7 @@
 //! `chx prepare` on a crate with no checked queries, which needs no server.
 //!
-//! `prepare` is mostly orchestration: find the workspace, clean it, run
-//! `cargo check` with the macros told where to save, and reconcile `.chx`
-//! with what came back. All of that can be exercised on a throwaway crate
+//! `prepare` is mostly orchestration: run `cargo check` with the macros told
+//! where to save, and reconcile `.chx` with what came back. All of that can be exercised on a throwaway crate
 //! that has no dependencies and no `query!`, so nothing is described and
 //! nothing connects; `CLICKHOUSE_URL` only has to be present. The real
 //! thing, with queries and a database, is `tests/prepare.rs`.
@@ -154,10 +153,11 @@ fn outside_a_cargo_project_prepare_fails_with_cargos_reason() {
     let output = prepare(dir.path(), &[]);
 
     assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.contains("could not find `Cargo.toml`"), "{err}");
     assert!(
-        stderr(&output).contains("cargo metadata failed"),
-        "{}",
-        stderr(&output)
+        err.contains("chx: internal error: cargo check failed"),
+        "{err}"
     );
 }
 

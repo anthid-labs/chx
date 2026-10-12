@@ -12,6 +12,15 @@ use reqwest::header::HeaderValue;
 
 use crate::error::{Error, Result};
 
+/// How long an unused connection stays in the pool.
+///
+/// ClickHouse closes an idle HTTP connection after its `keep_alive_timeout`,
+/// which has been as low as three seconds by default. A pooled connection
+/// older than that may already be closed by the server, and a request sent
+/// on it fails without having run. Dropping idle connections sooner than the
+/// server does costs a reconnect after a pause, and removes that failure.
+const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A connection to one ClickHouse server and database.
 ///
 /// Cheap to clone: clones share one connection pool. Nothing is sent until
@@ -53,7 +62,10 @@ impl Client {
     /// statement: this only parses.
     pub fn from_url(raw: &str) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .build()
+                .map_err(Error::Transport)?,
             endpoint: Endpoint::parse(raw)?,
         })
     }

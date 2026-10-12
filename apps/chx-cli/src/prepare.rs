@@ -7,9 +7,15 @@
 //! file; one that changed gets a new one, since the file is named by the hash
 //! of its text.
 //!
-//! The crate's own artifacts are cleaned first. A macro only runs when its
-//! crate compiles, and an up-to-date crate would not, so the cache would miss
-//! every query cargo saw no reason to revisit.
+//! Nothing is cleaned first. A macro only runs when its crate compiles, so
+//! the build has to recompile every crate that holds a checked query, and
+//! the macros arrange that themselves: each expansion reads `CHX_TMP` with
+//! `option_env!`, which makes cargo treat the variable as an input of the
+//! crate. A fresh `CHX_TMP` is therefore a rebuild of exactly those crates,
+//! whatever state the target directory is in and whatever else is building
+//! in it. Cleaning and then checking was not that: an editor or a second
+//! `prepare` that built the crate in between left it looking fresh, the
+//! macros never ran, and the cache came back empty.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,10 +27,9 @@ use chx_types::cache::{self, QueryData};
 use crate::cli::PrepareArgs;
 
 pub fn run(args: PrepareArgs) -> Result<()> {
-    let members = workspace_members()?;
+    // New on every run, which is what forces the recompile.
     let tmp = tempfile::tempdir()?;
 
-    clean(&members)?;
     check(&args, tmp.path())?;
 
     let fresh: BTreeMap<String, QueryData> = cache::list(tmp.path())
@@ -44,40 +49,6 @@ pub fn run(args: PrepareArgs) -> Result<()> {
 
 fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-}
-
-/// The packages in the workspace the working directory belongs to.
-fn workspace_members() -> Result<Vec<String>> {
-    let output = cargo()
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .output()?;
-    if !output.status.success() {
-        return Err(Error::Internal(format!(
-            "cargo metadata failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|err| Error::Internal(format!("cargo metadata: {err}")))?;
-    Ok(metadata["packages"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|package| package["name"].as_str().map(str::to_string))
-        .collect())
-}
-
-fn clean(members: &[String]) -> Result<()> {
-    let mut command = cargo();
-    command.arg("clean");
-    for member in members {
-        command.args(["-p", member]);
-    }
-    let status = command.status()?;
-    if !status.success() {
-        return Err(Error::Internal("cargo clean failed".to_string()));
-    }
-    Ok(())
 }
 
 fn check(args: &PrepareArgs, tmp: &Path) -> Result<()> {

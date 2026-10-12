@@ -31,7 +31,9 @@
 //! CLICKHOUSE_URL=http://default:chx@127.0.0.1:58123/<db> cargo run -p chx-cli -- prepare
 //! ```
 //!
-//! Check the changed `.chx` files in with the test. The `chx-cli` live suite
+//! Check the changed `.chx` files in with the test. The same directory
+//! holds the entries for `examples/checked.rs`, which is these macros again
+//! as a program to read and run. The `chx-cli` live suite
 //! runs `prepare --check` against this directory and fails on a stale one.
 //!
 //! | Test | Macro | Proves |

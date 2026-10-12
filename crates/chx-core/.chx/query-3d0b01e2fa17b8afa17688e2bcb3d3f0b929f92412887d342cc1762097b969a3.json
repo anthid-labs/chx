@@ -1,0 +1,35 @@
+{
+  "db_name": "ClickHouse",
+  "query": "SELECT id, venue, px, ts, note FROM probe WHERE px >= {floor:Decimal(38, 18)} ORDER BY id",
+  "describe": {
+    "parameters": [
+      {
+        "name": "floor",
+        "type": "Decimal(38, 18)"
+      }
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "type": "UInt64"
+      },
+      {
+        "name": "venue",
+        "type": "LowCardinality(String)"
+      },
+      {
+        "name": "px",
+        "type": "Decimal(38, 18)"
+      },
+      {
+        "name": "ts",
+        "type": "DateTime64(9, 'UTC')"
+      },
+      {
+        "name": "note",
+        "type": "Nullable(String)"
+      }
+    ]
+  },
+  "hash": "3d0b01e2fa17b8afa17688e2bcb3d3f0b929f92412887d342cc1762097b969a3"
+}

@@ -34,9 +34,8 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
-# `chx prepare` reads `cargo metadata` and collects what the macros wrote
-# into a directory that lives only for the run.
-serde_json = { workspace = true }
+# `chx prepare` collects what the macros wrote into a directory that lives
+# only for the run.
 tempfile = { workspace = true }
 
 [dev-dependencies]

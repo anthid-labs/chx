@@ -199,7 +199,6 @@ dependencies = [
  "chx-types",
  "clap",
  "dotenvy",
- "serde_json",
  "tempfile",
  "tokio",
  "tracing",

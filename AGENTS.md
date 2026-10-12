@@ -83,10 +83,21 @@ to the Rust type a column is read as and a parameter is bound as, and
   the columns a `query!` was compiled against, and a result with different
   columns is `Error::Schema`, never a misread column.
 - **`crates/chx-core/.chx` is generated.** It is the cache `tests/macros.rs`
-  compiles against, written by `chx prepare` from the tables in
-  `tests/fixture`. Change a query in that file, regenerate the cache (see the
-  README), and check both in. Never edit a cache file by hand; its hash is
+  and `examples/checked.rs` compile against, written by `chx prepare` from the tables in
+  `tests/fixture`. Change a query in either file, regenerate the cache (see the
+  README), check both in, and update `QUERIES` in
+  `apps/chx-cli/tests/prepare.rs` if the number of queries changed. Never edit a cache file by hand; its hash is
   checked.
+- **`prepare` never cleans.** Every checked macro expansion reads `CHX_TMP`
+  with `option_env!`, so cargo recompiles the crate when `prepare` sets a
+  new one. Do not go back to `cargo clean` followed by `cargo check`: any
+  build in between leaves the crate fresh, the macros do not run, and the
+  cache comes back empty. Never track `CLICKHOUSE_URL` that way; its value
+  would land in the target directory with the password in it.
+- **Idle connections are dropped after two seconds.** ClickHouse closes
+  idle HTTP connections on its own timer, and a request sent on one it has
+  closed fails without running. Do not raise `POOL_IDLE_TIMEOUT` past the
+  server's `keep_alive_timeout`.
 - **The library never panics on data.** A short body, a bad type string or a
   value that does not fit is an `Error`. `unwrap` and `expect` belong in
   tests.

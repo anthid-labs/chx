@@ -80,6 +80,7 @@ chx is built around that:
 - [Bulk inserts](#bulk-inserts)
 - [Types](#types)
 - [Cookbook](#cookbook)
+- [Coming from the clickhouse crate](#coming-from-the-clickhouse-crate)
 - [Commands](#commands)
 - [Migrations](#migrations)
 - [What a run does](#what-a-run-does)
@@ -267,6 +268,32 @@ let trades = chx::query!(
 Arguments are `name = expr`, or a bare `name` for a variable of that name.
 There must be exactly one per parameter.
 
+A macro call is a query, not a connection. It takes the same `chx::Client`
+as everything else, at the point you fetch, so one client serves every
+macro, every hand-written query and every insert in a program. While
+compiling, the macro uses no client at all: it reads the `.chx` cache, or
+makes one short request of its own to `CLICKHOUSE_URL`.
+
+All five, in a program that runs:
+[`examples/checked.rs`](crates/chx-core/examples/checked.rs).
+
+```bash
+docker compose -f docker/compose.yaml up -d --wait single
+CLICKHOUSE_URL=http://default:chx@127.0.0.1:58123 cargo run -p chx-core --example checked
+```
+
+```text
+query!        1 buy 101.250000000000000000 [] Some("opening print")
+query!        2 sell 101.500000000000000000 [] None
+query_as!     1 NYSE 101.250000000000000000 2026-10-12 15:39:12.931930001 UTC Some("opening print")
+query_as!     2 NYSE 101.500000000000000000 2026-10-12 15:39:12.936562371 UTC None
+query_scalar! 2 buys
+query_file!   ids [3]
+override      id 2 kind 2
+unchecked     ids [1, 2, 3]
+ok
+```
+
 What is checked, and where it comes from:
 
 - **Parameters, from the text.** Each `{name:Type}` has one argument, and the
@@ -320,8 +347,11 @@ and builds need no database.
 
 `chx prepare` runs `cargo check --all-targets` in the working directory with
 the macros told to save what they learn, then makes `.chx` exactly that set:
-stale files go, new and changed ones are written. The crates of the workspace
-are cleaned first, because a macro only runs when its crate recompiles.
+stale files go, new and changed ones are written. Nothing is cleaned first:
+each checked macro makes its crate depend on the variable `prepare` sets, so
+cargo recompiles exactly the crates that hold a query, whatever state the
+target directory is in and whatever else, an editor included, is building in
+it.
 Arguments after `--` replace the `cargo check` arguments, for example
 `chx prepare -- --workspace`. It needs `CLICKHOUSE_URL`, from the
 environment or `.env`, as `chx migrate` does.
@@ -551,6 +581,9 @@ let px = Decimal::new(1_012_500, 4);
 
 ### Checked queries
 
+These are the same calls [`examples/checked.rs`](crates/chx-core/examples/checked.rs)
+runs.
+
 ```rust
 // Fields come from the columns: `id: u64`, `venue: String`, `note: Option<String>`.
 let rows = chx::query!(
@@ -707,6 +740,67 @@ CHX_OFFLINE = "true"
 ```
 
 `chx prepare` overrides it for the one build that is meant to connect.
+
+## Coming from the clickhouse crate
+
+chx does not take the [`clickhouse`](https://crates.io/crates/clickhouse)
+crate's `Client`, and has no adapter for it: the macros generate calls into
+chx's own query builder. The two do run side by side. Both speak HTTP to the
+same server, so a service can build one of each from the same URL and move a
+query at a time.
+
+Moving a query changes three things.
+
+```rust
+// Before: the clickhouse crate.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct Trade {
+    id: u64,
+    venue: String,
+    note: Option<String>,
+}
+
+let trades = client
+    .query("SELECT ?fields FROM trades WHERE venue = ? AND id > ?")
+    .bind("NYSE")
+    .bind(100u64)
+    .fetch_all::<Trade>()
+    .await?;
+```
+
+```rust
+// After: chx, checked when the crate compiles.
+struct Trade {
+    id: u64,
+    venue: String,
+    note: Option<String>,
+}
+
+let trades = chx::query_as!(
+    Trade,
+    "SELECT id, venue, note FROM trades WHERE venue = {venue:String} AND id > {min:UInt64}",
+    venue = "NYSE",
+    min = 100u64,
+)
+.fetch_all(&client)
+.await?;
+```
+
+| | `clickhouse` crate | chx |
+| --- | --- | --- |
+| Parameters | `?`, by position, substituted into the SQL by the client. | `{name:Type}`, by name, sent beside the SQL and substituted by the server. |
+| Columns | `?fields`, filled from the struct. | Written out. The macro checks them against the struct. |
+| Row type | `#[derive(Row, Deserialize)]`, through serde. | No derive with `query_as!`; `#[derive(chx::FromRow)]`, read by name, with `chx::query_as`. |
+| A query that does not fit its struct | Found at run time, when the query is fetched. | A compile error. A schema that drifted after the build is `Error::Schema` before a row is read. |
+| Inserts | An insert typed by a serde row struct. | `client.insert("t", &[columns])`, rows as tuples or `IntoRow`, encoded against the table's real column types. |
+
+Field types can change with the move. A `Decimal` column is
+`chx::types::Decimal`, a mantissa and a scale taken from the column. A
+`DateTime64` is a `chrono::DateTime<Utc>` with no serde adapter attribute
+on the field, since the precision comes from the server.
+
+This comparison is against `clickhouse` 0.15. Check its documentation for
+what a later release does.
 
 ## Commands
 
