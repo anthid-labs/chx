@@ -1,6 +1,6 @@
 [package]
 name = "chx-core"
-description = "ClickHouse schema migrations: ordered SQL files, checksummed history, and resumable partial runs."
+description = "ClickHouse for Rust: compile-time checked queries, RowBinary rows, bulk inserts, and schema migrations with checksummed, resumable history."
 keywords = ["clickhouse", "migrations", "database", "schema", "sql"]
 categories = ["database", "development-tools"]
 readme = "README.md"
@@ -16,17 +16,31 @@ rust-version.workspace = true
 name = "chx"
 path = "src/lib.rs"
 
+[features]
+default = ["macros", "chrono", "uuid"]
+# `query!` and friends, and `#[derive(FromRow)]`.
+macros = ["dep:chx-macros"]
+# Column types. Each feature turns on the codec here and the matching column
+# mapping in the macros, so a build without one refuses the column at compile
+# time instead of at run time.
+chrono = ["dep:chrono", "chx-macros?/chrono"]
+uuid = ["dep:uuid", "chx-macros?/uuid"]
+
 [dependencies]
+chx-types = { workspace = true }
+chx-macros = { workspace = true, optional = true }
 # The timer the lock polls with. The runtime itself is the caller's.
 tokio = { workspace = true, features = ["time"] }
 reqwest = { workspace = true }
 url = { workspace = true }
-percent-encoding = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The live tests need a runtime, and join two runs to race them for the lock.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

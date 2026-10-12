@@ -1,0 +1,33 @@
+[package]
+name = "chx-macros"
+description = "Proc macros for chx: compile-time checked ClickHouse queries and the FromRow derive. Use through chx-core."
+keywords = ["clickhouse", "sql", "macros", "compile-time"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+proc-macro = true
+
+[features]
+# Mirrors the library's features, so the macros map a column to a Rust type
+# only when the library can decode it.
+chrono = []
+uuid = []
+
+[dependencies]
+chx-types = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+serde_json = { workspace = true }
+dotenvy = { workspace = true }
+# Blocking, because a proc macro runs inside rustc with no async runtime of
+# its own. One `DESCRIBE` per query, at compile time only.
+reqwest = { workspace = true, features = ["blocking"] }

@@ -75,6 +75,37 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    /// A Rust value could not be encoded for the ClickHouse type it was bound
+    /// or inserted as: the types do not match, or the value does not fit.
+    #[error("encode: {0}")]
+    Encode(String),
+
+    /// A column could not be read as the Rust type asked for, or the body
+    /// was not the RowBinary the server was asked for.
+    #[error("decode: {0}")]
+    Decode(String),
+
+    /// A query parameter was bound that the query does not declare, or one it
+    /// declares was never bound. Raised before anything is sent.
+    #[error("query parameter: {0}")]
+    Parameter(String),
+
+    /// The result set is not the one the code was compiled against: a column
+    /// was renamed, moved, added or dropped since `chx prepare` ran.
+    #[error("result columns differ from what this code expects: {0}")]
+    Schema(String),
+
+    /// `fetch_one` on a query that returned nothing.
+    #[error("no rows returned by a query that expected one")]
+    RowNotFound,
+
+    #[error("column not found: {0}")]
+    ColumnNotFound(String),
+
+    /// The server named a type the type model could not parse.
+    #[error("type: {0}")]
+    Type(String),
+
     /// An I/O failure with no more specific category. The source is preserved
     /// so the raw `io::ErrorKind` stays reachable.
     #[error("io error: {0}")]
@@ -94,6 +125,24 @@ impl From<io::Error> for Error {
             io::ErrorKind::NotFound => Error::NotFound(error.to_string()),
             _ => Error::Io(error),
         }
+    }
+}
+
+impl From<chx_types::endpoint::UrlError> for Error {
+    fn from(error: chx_types::endpoint::UrlError) -> Self {
+        Error::Url(error.0)
+    }
+}
+
+impl From<chx_types::types::ParseError> for Error {
+    fn from(error: chx_types::types::ParseError) -> Self {
+        Error::Type(error.to_string())
+    }
+}
+
+impl From<chx_types::params::ParamError> for Error {
+    fn from(error: chx_types::params::ParamError) -> Self {
+        Error::Parameter(error.to_string())
     }
 }
 

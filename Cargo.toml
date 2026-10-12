@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/anthid-labs/chx"
@@ -37,12 +37,35 @@ opt-level = 0
 #
 # The library is `chx-core` because `chx` on crates.io is an unrelated hex
 # editor. The command it builds is still `chx`.
-chx-core = { path = "crates/chx-core", version = "0.2.1" }
+#
+# Three layers, because a proc-macro crate cannot depend on the crate that
+# re-exports it: `chx-types` holds what the macros and the library must agree
+# on (the type model, the parameter grammar, the cache file), `chx-macros`
+# builds on that, and `chx-core` builds on both.
+chx-types = { path = "crates/chx-types", version = "0.3.0" }
+chx-macros = { path = "crates/chx-macros", version = "0.3.0" }
+chx-core = { path = "crates/chx-core", version = "0.3.0" }
 
 # Async runtime
 # Features are chosen per crate: the library needs only a timer, and a runtime
 # is the binary's decision.
 tokio = { version = "1.53" }
+
+# Proc macros. `syn` 2 rather than 3: the macros only parse a literal and a
+# list of `name = expr` arguments, and 2 is what every toolchain in the
+# declared range has already built.
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+# The offline query cache, `.chx/query-<hash>.json`. The same shape as
+# `.sqlx`, so a reader of one recognises the other.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Column types. Optional on the library so a binary that only runs
+# migrations pulls in neither.
+uuid = { version = "1", default-features = false }
 
 # ClickHouse, over its HTTP interface.
 #
@@ -67,7 +90,7 @@ dotenvy = "0.15"
 thiserror = "2"
 
 # Time
-chrono = { version = "0.4" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 # Telemetry
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }

@@ -1,0 +1,20 @@
+[package]
+name = "chx-types"
+description = "What chx and its macros agree on: the ClickHouse type model, the query parameter grammar, and the offline cache format."
+keywords = ["clickhouse", "types", "sql"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+percent-encoding = { workspace = true }
