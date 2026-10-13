@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/anthid-labs/chx"
@@ -42,11 +42,11 @@ opt-level = 0
 # re-exports it: `chx-types` holds what the macros and the library must agree
 # on (the type model, the parameter grammar, the cache file), `chx-macros`
 # builds on that, and `chx-core` builds on both.
-chx-types = { path = "crates/chx-types", version = "0.3.0" }
-chx-macros = { path = "crates/chx-macros", version = "0.3.0" }
+chx-types = { path = "crates/chx-types", version = "0.3.1" }
+chx-macros = { path = "crates/chx-macros", version = "0.3.1" }
 # No default features here, so the command pulls in only the migration engine;
 # a user of the library gets them all unless they say otherwise.
-chx-core = { path = "crates/chx-core", version = "0.3.0", default-features = false }
+chx-core = { path = "crates/chx-core", version = "0.3.1", default-features = false }
 
 # Async runtime
 # Features are chosen per crate: the library needs only a timer, and a runtime
